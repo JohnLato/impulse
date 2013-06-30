@@ -42,6 +42,7 @@ data Event a where
     EMap   :: Label -> (b -> a) -> Event b -> Event a
     EUnion :: Label -> Event a -> Event a -> Event a
     EApply :: Label -> Event b -> Behavior (b -> a) -> Event a
+    EDyn   :: Label -> Event (SGen a) -> Event a
 
 instance Functor Event where
     fmap f e = EMap (unsafePerformIO getLabel) f e
@@ -72,6 +73,7 @@ eLabel = \case
     EMap lbl _ _   -> lbl
     EUnion lbl _ _ -> lbl
     EApply lbl _ _ -> lbl
+    EDyn lbl _     -> lbl
 
 -----------------------------------------------------------
 

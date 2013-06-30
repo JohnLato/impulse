@@ -43,6 +43,11 @@ data Chain r a where
     COut   :: Chain r r
     CAcc   :: a -> CBehavior a   -> Chain r (a->a)
     CApply :: CBehavior (a -> b) -> Chain r b -> Chain r a
+    CDynCompile :: Chain r a -> Chain r (SGen a)
+    CDynAp :: CBehavior ([CompiledChain r a],[CompiledChain r a])
+              -> Chain r a
+
+type CompiledChain r a = (r -> IO ()) -> a -> IO ()
 
 -- A CBehavior is the representation of a Behavior within a Chain.
 -- TODO: most of the time we can't push to a behavior, so we should
@@ -56,7 +61,7 @@ makeCBehavior ref = (readIORef ref, modd)
 
 -- Differentiate between the two types of terminals, reactimated Events
 -- and accumulating Behaviors.
-data CTerminalType = CTTerm | CTBehavior deriving (Eq, Show, Ord)
+data CTerminalType = CTTerm | CTBehavior | CTTerm2 deriving (Eq, Show, Ord)
 
 -- wrap chains to put them in a map
 data EChain where
@@ -126,6 +131,7 @@ eOutCount e = go IM.empty e
         (EMap lbl _ prev)  -> go (ins lbl mp) prev
         (EUnion lbl p1 p2) -> go (go (ins lbl mp) p1) p2
         (EApply lbl p b)   -> go (goB (ins lbl mp) b) p
+        (EDyn lbl prev)    -> go (ins lbl mp) prev
     goB :: EdgeCount -> Behavior k -> EdgeCount
     goB mp = \case
         -- BAcc,BPure are terminals like EOut, so always use 0 out edges
@@ -309,8 +315,24 @@ buildChains = run . interleave . map (makeStack Nothing)
                     lift $ decEdgeCount lbl
                          >> addChains lbl (CApply cbeh) e childLbl
                     unFix $ interleave [nxtB, nxtE]
+                EDyn lbl prev -> do
+                    mTrace $ "EDyn " ++ show lbl
+                    (childE,childB) <- lift $ do
+                        decEdgeCount lbl
+                        chainsFrom e childLbl . snd <$> get
+                    cEs <- liftIO $ mapM (compileChain (error "TODO:22")) childE
+                    cBs <- liftIO $ mapM (compileChain (error "TODO:23")) childB
+                    cbeh <- liftIO $ makeCBehavior <$> newIORef (cEs,cBs)
+                    lift $ do
+                      addChain $ EChain lbl CTTerm2 $ CDynAp cbeh
+                      addChain $ EChain lbl CTBehavior
+                          $ CDynCompile . CMap const $ CAcc (cEs,cBs) cbeh
+                    unFix $ makeStack (Just lbl) prev
               | otherwise -> return $ makeStack (Just childLbl) e
             Nothing -> error $ "buildChains: no edgecount for: " ++ show (eLabel e)
+
+dynBuildChains :: SGen b -> ([CompiledChain r b],[CompiledChain r b])
+dynBuildChains = error "TODO: dynBuildChains"
       
 chainsFrom :: f a -> Label -> (Chains,Behaviors)
            -> ([Chain r a],[Chain r a])
@@ -340,27 +362,26 @@ mTrace :: MonadIO m => String -> m ()
 mTrace = const $ return ()
 -- mTrace = liftIO . traceIO
 
-compileChain :: Chain r a -> IO ((r -> IO ()) -> a -> IO ())
-compileChain (CEvent next) = mTrace "cc next" >> compileChain next
-compileChain (CMap f next) = do
+compileChain :: Chains -> Chain r a -> IO (CompiledChain r a)
+compileChain cStore (CEvent next) = mTrace "cc next" >> compileChain cStore next
+compileChain cStore (CMap f next) = do
     mTrace "cc cmap"
-    next' <- compileChain next
+    next' <- compileChain cStore next
     return $ \sink -> next' sink . f
-compileChain COut = mTrace "COut" >> return ($)
-compileChain (CAcc a0 (_reader,writer)) = do
+compileChain _ COut = mTrace "COut" >> return ($)
+compileChain _ (CAcc a0 (_reader,writer)) = do
     mTrace "cc cacc"
-    writer (const a0)
+    liftIO $ writer (const a0)
     return $ \_sink f -> writer f
-compileChain (CApply (reader,_) next) = do
+compileChain cStore (CApply (reader,_) next) = do
     mTrace "cc capply"
-    next' <- compileChain next
+    next' <- compileChain cStore next
     return $ \sink a -> do
         f <- reader
         next' sink $! f a
-{-
-compileChain (CDynE next) = do
-    next' <- compileChain next
-    return $ \sink dynE -> do
-        prev <- compileChain dynE
-        prev sink (error "compileChain: dynE not right")
--}
+compileChain _ (CDynAp (reader,_)) = do
+    mTrace "cc cDynAp"
+    return $ \sink a -> do
+        (nextTs,nextBs) <- reader
+        mapM_ (\f -> f sink a) nextTs
+        mapM_ (\f -> f sink a) nextBs

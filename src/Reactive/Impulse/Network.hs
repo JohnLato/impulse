@@ -56,7 +56,7 @@ startNetwork Network {..} = do
                 eTerms <- forM (reverse cnTerminals) $ \(EChain lbl' _ chain) -> do
                     mTrace $ "terminal e " ++ show lbl'
                     when (lbl' /= lbl) $ error "runNetwork: label mismatch"
-                    actK <- compileChain chain
+                    actK <- compileChain (error "TODO chains") chain
                     return $ (unsafeCoerce actK) id
                 -- these aren't actually directly behaviors, they're chains
                 -- that ultimately push to behaviors.
@@ -65,7 +65,7 @@ startNetwork Network {..} = do
                 eBehaviors <- forM (reverse cnBehaviors) $ \(EChain lbl' _ chain) -> do
                     mTrace $ "terminal b " ++ show lbl'
                     when (lbl' /= lbl) $ error "runNetwork: label mismatch b"
-                    actK <- compileChain chain
+                    actK <- compileChain (error "TODO; chains") chain
                     return $ (unsafeCoerce actK) id
                 let actions = sequence_ . sequence (eTerms ++ eBehaviors)
                 writeIORef ref actions
