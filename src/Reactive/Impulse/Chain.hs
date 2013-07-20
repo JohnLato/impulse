@@ -5,6 +5,8 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE RecursiveDo #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE ViewPatterns #-}
 
 {-# OPTIONS_GHC -Wall #-}
 -- The 'Chain' is the main runtime representation of a reactive network.
@@ -14,374 +16,412 @@
 -- All reactimate chains are performed in the order of the reactimate calls,
 -- then all behavior updates are performed (in an arbitrary order).
 
-module Reactive.Impulse.Chain
-
-where
+module Reactive.Impulse.Chain (
+  DynGraph (..)
+, emptyDynGraph
+, buildTopChains
+, EChain (..)
+, chainLbl
+, compileChain
+, getChain
+) where
 
 import Reactive.Impulse.Core
 
 import Control.Applicative
-import Control.Arrow
-import Control.Monad.State.Lazy
-import Control.Monad.Trans.Maybe
+import Control.Monad.Identity
+import Control.Monad.RWS
+import Control.Newtype
 
+import Data.Foldable (foldMap, foldl')
 import Data.IORef
 import Data.IntMap (IntMap)
 import qualified Data.IntMap as IM
-import Data.List (foldl')
-import Data.Maybe
+import qualified Data.IntSet as IntSet
 import Data.Monoid
 
 import System.Mem.StableName
+import System.Mem.Weak
 import Unsafe.Coerce
 
 -----------------------------------------------------------
 
-data Chain r a where
-    CEvent :: Chain r a -> Chain r a
-    CMap   :: (a -> b)  -> Chain r b -> Chain r a
-    COut   :: Chain r r
-    CAcc   :: a -> CBehavior a   -> Chain r (a->a)
-    CApply :: CBehavior (a -> b) -> Chain r b -> Chain r a
-    CDynCompile :: Chain r a -> Chain r (SGen a)
-    CDynAp :: CBehavior ([CompiledChain r a],[CompiledChain r a])
-              -> Chain r a
+data FChain f r a where
+    CEvent :: Label -> f (FChain f r a) -> FChain f r a
+    CMap   :: Label -> (a -> b)  -> f (FChain f r b) -> FChain f r a
+    COut   :: Label -> FChain f r r
+    CAcc   :: Label -> CBehavior a -> FChain f r (a->a)
+    CApply :: Label -> CBehavior (a -> b) -> f (FChain f r b) -> FChain f r a
+    CDynB  :: Label -> CBSwitch (CBehavior a) -> FChain f r (Behavior a)
+-- not sure that I actually need the functor param.  Originally wanted
+-- to switch between ChainNode and Identity, but now that's no longer
+-- necessary
 
-type CompiledChain r a = (r -> IO ()) -> a -> IO ()
+type Chain r a = FChain ChainNode r a
+
+chainLbl :: Chain r a -> Label
+chainLbl (CEvent lbl _) = lbl
+chainLbl (CMap lbl _ _) = lbl
+chainLbl (COut lbl)     = lbl
+chainLbl (CAcc lbl _)   = lbl
+chainLbl (CApply lbl _ _) = lbl
+chainLbl (CDynB lbl _)    = lbl
+
+data ChainNode t = ChainNode
+    { cnChildren :: [ t ]
+    , cnPushSet   :: ChainSet
+    } deriving Functor
+
+instance Monoid (ChainNode t) where
+    mempty = ChainNode [] IntSet.empty
+    ChainNode l1 l2 `mappend` ChainNode r1 r2 =
+      ChainNode (l1 <> r1) (l2 `IntSet.union` r2)
+
+type ChainSet = IntSet.IntSet
+
+singleton :: Label -> Chain r a -> ChainNode (Chain r a)
+singleton lbl c = ChainNode [c] (IntSet.singleton lbl)
+
+eSingleton :: EChain -> ChainNode (Chain r a)
+eSingleton (EChain c) = singleton (chainLbl c) (unsafeCoerce c)
+
+pushNode :: ChainNode (Chain r a) -> Label -> EChain -> ChainNode (Chain r a)
+pushNode cn@(ChainNode {..}) parentLbl ec
+    | IntSet.member parentLbl cnPushSet =
+        let cnPushSet' = IntSet.insert (eLbl ec) cnPushSet 
+        in fmap (insertAt parentLbl ec) cn {cnPushSet = cnPushSet'}
+    | otherwise = cn
+
+insertAt :: Label -> EChain -> Chain r a -> Chain r a
+insertAt parentLbl echain chain = case chain of
+    (CEvent lbl cn)
+      | parentLbl == lbl -> CEvent lbl (cn <> eSingleton echain)
+      | otherwise -> CEvent lbl (pushNode cn parentLbl echain)
+    (CMap lbl f cn)
+      | parentLbl == lbl -> CMap lbl f (cn <> eSingleton echain)
+      | otherwise -> CMap lbl f (pushNode cn parentLbl echain)
+    (COut lbl)
+      | parentLbl == lbl ->
+          error $ "Impulse: internal error, insertAt to COut" ++ show lbl
+      | otherwise -> chain
+    (CAcc lbl _)
+      | parentLbl == lbl ->
+          error $ "Impulse: internal error, insertAt to CAcc" ++ show lbl
+      | otherwise -> chain
+    (CApply lbl beh cn)
+      | parentLbl == lbl -> CApply lbl beh (cn <> eSingleton echain)
+      | otherwise -> CApply lbl beh (pushNode cn parentLbl echain)
+    (CDynB lbl _)
+      | parentLbl == lbl ->
+          error $ "Impulse: internal error, insertAt to CDynB" ++ show lbl
+      | otherwise -> chain
+
+-- True if the labelled chain is referenced by this chain.
+containsChain :: Chain r a -> Label -> Bool
+containsChain (CEvent l   ChainNode{..}) t = t == l || IntSet.member t cnPushSet
+containsChain (CMap l _   ChainNode{..}) t = t == l || IntSet.member t cnPushSet
+containsChain (CApply l _ ChainNode{..}) t = t == l || IntSet.member t cnPushSet
+containsChain (chainLbl -> l) t = t == l
 
 -- A CBehavior is the representation of a Behavior within a Chain.
--- TODO: most of the time we can't push to a behavior, so we should
--- probably differentiate between the two cases.
-type CBehavior a = (IO a, (a -> a) -> IO ())
+data CBehavior a =
+    ReadCB (IO a)
+  | PushCB (IO a) ((a -> a) -> IO ())
+  | SwchCB {-# UNPACK #-} !(CBSwitch (CBehavior a))
+
+-- only used for dynamic network switching
+data CBSwitch a = CBSwitch (IO a) (a -> IO ())
 
 makeCBehavior :: IORef a -> CBehavior a
-makeCBehavior ref = (readIORef ref, modd)
+makeCBehavior ref = PushCB (readIORef ref) modd
   where
     modd f = atomicModifyIORef' ref (\l -> let a' = f l in (a',a')) >>= (`seq` return ())
 
--- Differentiate between the two types of terminals, reactimated Events
--- and accumulating Behaviors.
-data CTerminalType = CTTerm | CTBehavior | CTTerm2 deriving (Eq, Show, Ord)
+readCB :: CBehavior a -> IO a
+readCB (ReadCB x)   = x
+readCB (PushCB x _) = x
+readCB (SwchCB (CBSwitch r _))   = r >>= readCB
+
+makeCBSwitch :: IORef a -> CBSwitch a
+makeCBSwitch ref = CBSwitch (readIORef ref) modd
+  where
+    modd !x = atomicWriteIORef ref x
 
 -- wrap chains to put them in a map
 data EChain where
-    EChain :: Label -> CTerminalType -> Chain r a -> EChain
+    EChain :: Chain r a -> EChain
 
 data EBehavior where
     EBehavior :: Label -> CBehavior a -> EBehavior
 
+eLbl :: EChain -> Label
+eLbl (EChain c ) = chainLbl c
 -----------------------------------------------------------
 
--- The ChainM monoid keeps track of bookkeeping items while chains are being
--- constructed from the graph.
-type ChainM = StateT (EdgeCount,(Chains,Behaviors)) IO
+-- a DynGraph is a collection of chains that can be compiled
+-- and/or executed.  It is basically a map of chain heads.
 
--- The downstream chains for each node in a graph.
-data ChainNode = ChainNode
-    { cnTerminals :: [ EChain ]
-    , cnBehaviors :: [ EChain ]
-    }
+data DynGraph = DynGraph
+  { dgHeads     :: IntMap EChain
+  , dgBehaviors :: IntMap EBehavior
+  , dgBoundsMap :: IntMap Label
+  -- map from heads to their prev label
+  -- The boundaryMap is not used for all heads, only when dynamically switching
+  -- to already-existing heads.
+  , dgBoundary  :: ChainSet
+  , dgDynNodes  :: IntMap (Weak DynNodeX)
+  }
 
-instance Monoid ChainNode where
-    mempty = ChainNode [] []
-    ChainNode l1 l2 `mappend` ChainNode r1 r2 = ChainNode (l1 <> r1) (l2 <> r2)
+type DynNodeX = IORef [DynHeadX]
 
-type Chains = IntMap ChainNode
-type Behaviors = IntMap EBehavior
+data DynHeadX where
+  DynHeadX :: IORef (Label, a -> IO ()) -> DynHeadX
 
-chainExists :: Label -> ChainM Bool
-chainExists lbl = IM.member lbl . fst . snd <$> get
+emptyDynGraph :: DynGraph
+emptyDynGraph = DynGraph IM.empty IM.empty IM.empty IntSet.empty IM.empty
 
-addChain :: EChain -> ChainM ()
-addChain e@(EChain lbl ctyp _) = modify $ second . first $ IM.insertWith mappend lbl cn
+-- Add a new top-level chain to a DynGraph
+addHead :: EChain -> DynGraph -> DynGraph
+addHead e dg =
+    dg { dgHeads = IM.insert (eLbl e) e $ dgHeads dg }
+
+removeHead :: Label -> DynGraph -> DynGraph
+removeHead lbl dg = dg { dgHeads = IM.delete lbl $ dgHeads dg }
+
+-- Add a chain under the given label.
+addChainTo :: EChain -> Label -> DynGraph -> DynGraph
+addChainTo echain parentLbl dg = dg
+    { dgHeads = IM.map f $ dgHeads dg }
+    where
+      f (EChain ec) = EChain $ insertAt parentLbl echain ec
+
+addBoundary :: Label -> Label -> DynGraph -> DynGraph
+addBoundary thisLbl childLbl dg = dg
+    { dgBoundsMap = IM.insert childLbl thisLbl (dgBoundsMap dg) }
+
+chainExists :: Label -> DynGraph -> Bool
+chainExists needle DynGraph{..} = any f $ IM.elems dgHeads
   where
-    cn = case ctyp of
-        CTTerm -> ChainNode {cnTerminals = [e], cnBehaviors = [ ]}
-        CTBehavior  -> ChainNode {cnTerminals = [ ], cnBehaviors = [e]}
+    f (EChain c) = containsChain c needle
 
-addBehavior :: EBehavior -> ChainM ()
-addBehavior e@(EBehavior lbl _) = modify $ (second . second) $ IM.insert lbl e
+getChain :: Label -> DynGraph -> Maybe EChain
+getChain target = stepper' . IM.elems . dgHeads
+  where
+    stepper :: [Chain r x] -> Maybe EChain
+    stepper = ala First (foldMap . (. stepChain))
+    stepper' = ala First (foldMap . (. getIt))
+    getIt e@(EChain c)
+        | target == chainLbl c = Just e
+        | otherwise     = stepChain c
+    stepChain :: Chain r x -> Maybe EChain
+    stepChain c | chainLbl c == target = Just $ EChain c
+    stepChain c@(CEvent _ n) = do
+        guard (containsChain c target)
+        stepper $ cnChildren n
+    stepChain c@(CMap _ _ n) = do
+        guard (containsChain c target)
+        stepper $ cnChildren n
+    stepChain c@(CApply _ _ n) = do
+        guard (containsChain c target)
+        stepper $ cnChildren n
+    stepChain _ = Nothing
 
-lookupChain :: Label -> ChainM (Maybe ChainNode)
-lookupChain lbl = IM.lookup lbl . fst . snd <$> get
+-----------------------------------------------------------
 
-lookupBehavior :: Label -> ChainM (Maybe EBehavior)
-lookupBehavior lbl = IM.lookup lbl . snd . snd <$> get
+-- The ChainM monad keeps track of a DynGraph as it's being constructed.
+type ChainM w = RWST () w DynGraph IO
+
+type DynW = ()
+
+addBehavior :: Monoid w => EBehavior -> ChainM w ()
+addBehavior e@(EBehavior lbl _) = modify $
+    \dg -> dg { dgBehaviors = IM.insert lbl e $ dgBehaviors dg }
+
+lookupBehavior :: Monoid w => Label -> ChainM w (Maybe EBehavior)
+lookupBehavior lbl = IM.lookup lbl . dgBehaviors <$> get
 
 -----------------------------------------------------
 
--- We need to fully process all chains from a node before we can move up to
--- its parent.  The first step of the algorithm is to count the number of
--- output edges from each node.  We can decrement the count as children
--- are encountered, so when a node has no unprocessed children it's ready
--- to be processed itself.
+buildTopChains :: [ Event (IO ()) ] => ChainM () ()
+buildTopChains = buildChains
 
-type EdgeCount = IntMap Int
-
--- count the number of out edges from a node.
-eOutCount :: Event a -> EdgeCount
-eOutCount e = go IM.empty e
+-- build all chains for a given set of output Events.
+buildChains :: forall w. Monoid w => [ Event (IO ()) ] -> ChainM w ()
+buildChains = mapM_ addChain'
   where
-    go :: EdgeCount -> Event k -> EdgeCount
-    go mp = \case
-        -- assume we've come from somewhere, except for EOut nodes
-        (EIn lbl) -> ins lbl mp
-        (EOut lbl prev)    -> go (IM.insert lbl 0 mp) prev
-        (ENull lbl prev)   -> go (ins lbl mp) prev
-        (EMap lbl _ prev)  -> go (ins lbl mp) prev
-        (EUnion lbl p1 p2) -> go (go (ins lbl mp) p1) p2
-        (EApply lbl p b)   -> go (goB (ins lbl mp) b) p
-        (EDyn lbl prev)    -> go (ins lbl mp) prev
-    goB :: EdgeCount -> Behavior k -> EdgeCount
-    goB mp = \case
-        -- BAcc,BPure are terminals like EOut, so always use 0 out edges
-        BAcc lbl _ prev    -> go (IM.insert lbl 0 mp) prev
-        BPure lbl _        -> IM.insert lbl 0 mp
-        BMap lbl _ b       -> goB (ins lbl mp) b
-        BApp lbl f b       -> goB (goB (ins lbl mp) f) b
-    ins :: Label -> EdgeCount -> EdgeCount
-    ins lbl = IM.insertWith (+) lbl 1
+    guardBound lbl act = do
+        boundary <- dgBoundary <$> get
+        when (not $ IntSet.member lbl boundary) act
+    addChain' (EOut lbl prev) = guardBound lbl $ do
+            let chn = COut lbl :: Chain (IO ()) (IO ())
+            modify $ addHead (EChain chn)
+            addChain lbl prev
+    addChain' _ = error "buildChains: got non-terminal with no child info"
 
-calcAllOutEdges :: [ Event k ] -> EdgeCount
-calcAllOutEdges = foldl' (\acc -> IM.unionWith (+) acc . eOutCount) IM.empty
+addBound :: Monoid w => Label -> Label -> ChainM w () -> ChainM w ()
+addBound childLbl thisLbl act = do
+    boundary <- dgBoundary <$> get
+    if IntSet.member thisLbl boundary
+      then modify $ addBoundary thisLbl childLbl
+      else act
 
-decEdgeCount :: Label -> ChainM ()
-decEdgeCount = modify . first . IM.adjust (subtract 1)
+addChain :: Monoid w => Label -> Event k -> ChainM w ()
+addChain _ (EOut _ _) = error "buildChains: got a non-terminal EOut"
+addChain childLbl (EIn lbl)  = addBound childLbl lbl $ do
+    mTrace $ "EIn " ++ show lbl
+    void $ addChains childLbl lbl (CEvent lbl)
+addChain childLbl (ENull lbl prevE)  = addBound childLbl lbl $ do
+    mTrace $ "ENull " ++ show lbl
+    added <- addChains childLbl lbl (CEvent lbl)
+    when added $ addChain lbl prevE
+addChain childLbl (EMap lbl f prevE) = addBound childLbl lbl $ do
+    mTrace $ "EMap " ++ show lbl
+    added <- addChains childLbl lbl (CMap lbl f)
+    when added $ addChain lbl prevE
+addChain childLbl (EUnion lbl prev1 prev2) = addBound childLbl lbl $ do
+    mTrace $ "EUnion " ++ show lbl
+    added <- addChains childLbl lbl (CEvent lbl)
+    when added $ addChain lbl prev1 >> addChain lbl prev2
+addChain childLbl (EApply lbl prevE beh) = addBound childLbl lbl $ do
+    mTrace $ "EApply " ++ show lbl
+    cbeh  <- makeBehavior beh
+    added <- addChains childLbl lbl (CApply lbl cbeh)
+    when added $ addChain lbl prevE
 
--- terminals always have a zero out count, so we have a convenience function
--- for that case.
-zeroEdgeCount :: Label -> ChainM ()
-zeroEdgeCount = modify . first . flip IM.insert 0
-
------------------------------------------------------
-
--- We keep a queue of nodes remaining to be processed.
--- when a node is first encountered, if the nodecount <= 0,
--- it's processed and the parent nodes pushed onto the front.
--- If the nodecount is >0, it is popped and enqueued at the back.
---
--- operationally, this queue is kept as a recursive (MaybeT ChainM).
--- An action that returns Nothing is completed. If it returns a new
--- (MaybeT ChainM) action, that action is enqueued.
---
--- TODO:
--- We could check for non-termination by checking the edgecount map at
--- each step.  If the edgecount hasn't changed, and no actions have
--- completed, then we're likely in a non-terminating cycle.  I think this
--- can only happen from obvious cyclic cases like
--- 
--- > let e1 = e2
--- >     e2 = e1
---
-
-newtype Fix f = Fx { unFix :: f (Fix f) }
-
-type ProcessQueue = Fix (MaybeT ChainM)
-
--- interleave a bunch of ProcessQueue items.
-interleave :: [ProcessQueue] -> ProcessQueue
-interleave stuff = Fx $ do
-    let stateMs = map (runMaybeT . unFix) stuff
-    nexts <- lift $ catMaybes <$> sequence stateMs
-    -- if there's nothing left to do, just mzero now.
-    guard (not $ null nexts)
-    return $ interleave nexts 
-
--- Evaluate a ProcessQueue until everything is done.
--- this could fail to terminate, see the notes above ProcessQueue.
-run :: ProcessQueue -> ChainM ()
-run (Fx f) = do
-    stm <- runMaybeT f
-    case stm of
-        Nothing -> return ()
-        Just c  -> run c
-
--- | Create all Chains for a list of output Events.
-buildChains :: [ Event (IO ()) ] -> ChainM ()
-buildChains = run . interleave . map (makeStack Nothing)
-  where
-    makeStackB :: Behavior k -> ChainM (CBehavior k, ProcessQueue)
-    makeStackB = \case
-        -- for BAcc, the child label doesn't matter, since we
-        -- don't need its chain
-        BAcc lbl a0 prevE -> lookupBehavior lbl >>= \case
-            Just (EBehavior lbl' beh)
-                | lbl == lbl' -> return (unsafeCoerce beh, Fx mzero)
-                | otherwise -> error $ "buildChains: labels didn't match for BAcc!"
-            Nothing -> do
-                mTrace $ "BAcc " ++ show lbl
-                cbeh <- liftIO $ makeCBehavior <$> newIORef a0
-                -- BAcc is both a terminal push action and an initial pull
-                -- so it goes in both chain and behavior maps
-                zeroEdgeCount lbl
-                addChain $ EChain lbl CTBehavior $ CAcc a0 cbeh
-                addBehavior $ EBehavior lbl cbeh
-                -- the pushing event needs to have this child added
-                return (cbeh, makeStack (Just lbl) prevE)
-        BPure _l a -> return ((return a, const $ error "can't write to Pure"), Fx mzero)
-        BMap lbl f prevB -> lookupBehavior lbl >>= \case
-          Just (EBehavior lbl' cbeh)
-              | lbl == lbl' -> return $ unsafeCoerce cbeh
-              | otherwise -> error "buildChains: labels don't match for BMap"
-          Nothing -> do
-              mTrace $ "BMap " ++ show lbl
-              (pBeh,nextStuff) <- makeStackB prevB
-              let pRead = fst pBeh
-              -- always force stuff before calling makeStableName
-              !p0 <- liftIO $ pRead
-              cache <- liftIO $ do
-                  stn <- makeStableName p0
-                  newIORef (stn,f p0)
-              let cbeh = (cRead, \_ -> error "can't write directly to BMap")
-                  cRead = do
-                      (stn,c) <- readIORef cache
-                      !p   <- pRead
-                      stn' <- makeStableName p
-                      if stn == stn'
-                          then return c
-                          else let c' = (f p)
-                              in writeIORef cache (stn',c') >> return c'
-              addBehavior $ EBehavior lbl cbeh
-              return (cbeh, nextStuff)
-        BApp lbl fB prevB -> lookupBehavior lbl >>= \case
-          Just (EBehavior lbl' cbeh)
-              | lbl == lbl' -> return $ unsafeCoerce cbeh
-              | otherwise -> error "buildChains: labels don't match for BMap"
-          Nothing -> do
-              mTrace $ "BApp " ++ show lbl
-              (pBeh,nextStuff1) <- makeStackB prevB
-              (pfB, nextStuff2) <- makeStackB fB
-              let pRead = fst pBeh
-                  fRead = fst pfB
-              -- always force stuff before calling makeStableName
-              !p0 <- liftIO $ pRead
-              !f0 <- liftIO $ fRead
-              cache <- liftIO $ do
-                  stn <- makeStableName (f0,p0)
-                  newIORef (stn,f0 p0)
-              let cbeh = (cRead, \_ -> error "can't write directly to BMap")
-                  cRead = do
-                      (stn,c) <- readIORef cache
-                      !p   <- pRead
-                      !f   <- fRead
-                      stn' <- makeStableName (f,p)
-                      if stn == stn'
-                          then return c
-                          else let c' = (f p)
-                              in writeIORef cache (stn',c') >> return c'
-              addBehavior $ EBehavior lbl cbeh
-              return (cbeh, interleave [nextStuff1,nextStuff2])
-
-    makeStack :: Maybe Label -> Event k -> ProcessQueue
-    makeStack Nothing (EOut lbl prev) = Fx $ do
-        let chn = COut :: Chain (IO ()) (IO ())
-        lift $ decEdgeCount lbl >> addChain (EChain lbl CTTerm chn)
-        return $ makeStack (Just lbl) prev
-    makeStack Nothing e = error $ "buildChains: got non-terminal with no child info: " ++ show (eLabel e)
-    makeStack (Just childLbl) e = Fx $ do
-        curEdges <- fst <$> get
-        case (IM.lookup childLbl curEdges) of
-            -- when edgecount = 0, we can process a node
-            -- otherwise we need to wait until all edges are complete
-            Just n
-              | n <= 0 -> case e of
-                EOut _ _ ->
-                    error "buildChains: got a non-terminal EOut"
-                EIn lbl -> do
-                    mTrace $ "EIn " ++ show lbl
-                    lift $ decEdgeCount lbl >> addChains lbl CEvent e childLbl
-                    mzero
-                ENull lbl prev -> do
-                    mTrace $ "ENull " ++ show lbl
-                    lift $ decEdgeCount lbl >> addChains lbl CEvent e childLbl
-                    unFix $ makeStack (Just lbl) prev
-                EMap lbl f prev -> do
-                    mTrace $ "EMap " ++ show lbl
-                    lift $ decEdgeCount lbl >> addChains lbl (CMap f) e childLbl
-                    unFix $ makeStack (Just lbl) prev
-                EUnion lbl prev1 prev2 -> do
-                    lift $ decEdgeCount lbl >> addChains lbl id e childLbl
-                    -- we can't just run the next blocks, because then
-                    -- we might terminate early.  This way we thread the
-                    -- state through and postpone the continuation logic
-                    -- until later
-                    let nxt1 = makeStack (Just lbl) prev1
-                        nxt2 = makeStack (Just lbl) prev2
-                    unFix $ interleave [nxt1,nxt2]
-                EApply lbl prevE beh -> do
-                    mTrace $ "EApply " ++ show lbl
-                    let nxtE = makeStack (Just lbl) prevE
-                    (cbeh, nxtB) <- lift $ makeStackB beh
-                    lift $ decEdgeCount lbl
-                         >> addChains lbl (CApply cbeh) e childLbl
-                    unFix $ interleave [nxtB, nxtE]
-                EDyn lbl prev -> do
-                    mTrace $ "EDyn " ++ show lbl
-                    (childE,childB) <- lift $ do
-                        decEdgeCount lbl
-                        chainsFrom e childLbl . snd <$> get
-                    cEs <- liftIO $ mapM (compileChain (error "TODO:22")) childE
-                    cBs <- liftIO $ mapM (compileChain (error "TODO:23")) childB
-                    cbeh <- liftIO $ makeCBehavior <$> newIORef (cEs,cBs)
-                    lift $ do
-                      addChain $ EChain lbl CTTerm2 $ CDynAp cbeh
-                      addChain $ EChain lbl CTBehavior
-                          $ CDynCompile . CMap const $ CAcc (cEs,cBs) cbeh
-                    unFix $ makeStack (Just lbl) prev
-              | otherwise -> return $ makeStack (Just childLbl) e
-            Nothing -> error $ "buildChains: no edgecount for: " ++ show (eLabel e)
-
-dynBuildChains :: SGen b -> ([CompiledChain r b],[CompiledChain r b])
-dynBuildChains = error "TODO: dynBuildChains"
-      
-chainsFrom :: f a -> Label -> (Chains,Behaviors)
-           -> ([Chain r a],[Chain r a])
-chainsFrom _ lbl (chainMp,_behMp) =
-    let ChainNode{..} = fromMaybe (error errMsg) $ IM.lookup lbl chainMp
-        errMsg = "no chains for " ++ show lbl
-    in (map (\(EChain _ _ c) -> unsafeCoerce c) cnTerminals
-       ,map (\(EChain _ _ c) -> unsafeCoerce c) cnBehaviors)
-
--- this should be let-bound in buildChains', but I haven't
--- bothered to figure out the correct type for it there (WRT maps)
 addChains
-   :: Label
-   -> (Chain r a -> Chain r b)
-   -> f a
-   -> Label
-   -> ChainM ()
-addChains lbl fn e chldLbl = do
-    (childE,childB) <- chainsFrom e chldLbl . snd <$> get
-    mapM_ (addChain . EChain lbl CTTerm . fn) childE
-    mapM_ (addChain . EChain lbl CTBehavior . fn) childB
+    :: Monoid w
+    => Label
+    -> Label
+    -> (ChainNode (Chain r a) -> Chain r b)
+    -> ChainM w Bool  -- True if the chain was added
+addChains childLbl lbl constr = do
+    dg <- get
+    let Just childChain = getChain childLbl dg
+        echain = EChain (constr $ eSingleton childChain)
+    if chainExists lbl dg
+        then mTrace ("adding " ++ show childLbl ++ " to " ++ show lbl) >> False <$ put (addChainTo childChain lbl dg)
+        else True  <$ put (removeHead childLbl $ addHead echain dg)
+
+makeBehavior :: forall w k. Monoid w => Behavior k -> ChainM w (CBehavior k)
+makeBehavior (BAcc lbl a0 prevE) = lookupBehavior lbl >>= \case
+    Just (EBehavior lbl' beh)
+        | lbl == lbl' -> return (unsafeCoerce beh)
+        | otherwise -> error $ "buildChains: labels don't match for BAcc!"
+    Nothing -> do
+        mTrace $ "BAcc " ++ show lbl
+        cbeh <- liftIO $ makeCBehavior <$> newIORef a0
+        -- BAcc is both a terminal push action and an initial pull
+        -- so it goes in both chain and behavior maps
+        modify $ addHead (EChain $ CAcc lbl cbeh)
+        addBehavior $ EBehavior lbl cbeh
+        -- the pushing event needs to have this child added
+        cbeh <$ addChain lbl prevE
+makeBehavior (BPure _l a) = return (ReadCB (return a))
+makeBehavior (BMap lbl f prevB) = lookupBehavior lbl >>= \case
+    Just (EBehavior lbl' beh)
+        | lbl == lbl' -> return (unsafeCoerce beh)
+        | otherwise -> error $ "buildChains: labels don't match for BMap!"
+    Nothing -> do
+        mTrace $ "BMap " ++ show lbl
+        pRead <- readCB <$> makeBehavior prevB
+        -- always force stuff before calling makeStableName
+        !p0 <- liftIO $ pRead
+        cache <- liftIO $ do
+            stn <- makeStableName p0
+            newIORef (stn,f p0)
+        let cbeh = ReadCB cRead
+            cRead = do
+                (stn,c) <- readIORef cache
+                !p   <- pRead
+                stn' <- makeStableName p
+                if stn == stn'
+                    then return c
+                    else let c' = (f p)
+                        in writeIORef cache (stn',c') >> return c'
+        addBehavior $ EBehavior lbl cbeh
+        return cbeh
+makeBehavior (BApp lbl fB prevB) = lookupBehavior lbl >>= \case
+    Just (EBehavior lbl' cbeh)
+        | lbl == lbl' -> return $ unsafeCoerce cbeh
+        | otherwise -> error "buildChains: labels don't match for BApp"
+    Nothing -> do
+        mTrace $ "BApp " ++ show lbl
+        pRead <- readCB <$> makeBehavior prevB
+        fRead <- readCB <$> makeBehavior fB
+        -- always force stuff before calling makeStableName
+        !p0 <- liftIO $ pRead
+        !f0 <- liftIO $ fRead
+        cache <- liftIO $ do
+            stn1 <- makeStableName f0
+            stn2 <- makeStableName p0
+            newIORef (stn1,stn2,f0 p0)
+        let cbeh = ReadCB cRead
+            cRead = do
+                (stn1,stn2,c) <- readIORef cache
+                !p   <- pRead
+                !f   <- fRead
+                stn1' <- makeStableName f
+                stn2' <- makeStableName p
+                if stn1 == stn1' && stn2 == stn2'
+                    then return c
+                    else let c' = (f p)
+                        in writeIORef cache (stn1',stn2',c') >> return c'
+        addBehavior $ EBehavior lbl cbeh
+        return cbeh
+makeBehavior (BSwch lbl b prevE) = lookupBehavior lbl >>= \case
+    Just (EBehavior lbl' beh)
+        | lbl == lbl' -> return (unsafeCoerce beh)
+        | otherwise -> error $ "buildChains: labels don't match for BSwch!"
+    Nothing -> do
+        mTrace $ "BSwch " ++ show lbl
+        b0  <- makeBehavior b
+        cbs <- liftIO $ makeCBSwitch <$> newIORef b0
+        let cbeh = SwchCB cbs
+        modify $ addHead (EChain $ CDynB lbl cbs)
+        addBehavior $ EBehavior lbl cbeh
+        cbeh <$ addChain lbl prevE
+
+-----------------------------------------------------
+-- dynamic switching stuff
+
+dynNode :: Label -> ChainM w DynNodeX
+dynNode target = error "TODO"
+
 -----------------------------------------------------
 
-whenM :: Monad m => m Bool -> m () -> m ()
-whenM p act = p >>= \case { True -> act; False -> return () }
-mTrace :: MonadIO m => String -> m ()
-mTrace = const $ return ()
--- mTrace = liftIO . traceIO
+-- Takes two inputs, the final sink and a value.  Performs all real terminal
+-- actions and returns an action to be performed afterwards (updating
+-- behaviors)
+type CompiledChain r a = (r -> IO ()) -> a -> IO [UpdateStep]
+type UpdateStep = Either (ChainM DynW ()) (IO ())
 
-compileChain :: Chains -> Chain r a -> IO (CompiledChain r a)
-compileChain cStore (CEvent next) = mTrace "cc next" >> compileChain cStore next
-compileChain cStore (CMap f next) = do
-    mTrace "cc cmap"
-    next' <- compileChain cStore next
-    return $ \sink -> next' sink . f
-compileChain _ COut = mTrace "COut" >> return ($)
-compileChain _ (CAcc a0 (_reader,writer)) = do
-    mTrace "cc cacc"
-    liftIO $ writer (const a0)
-    return $ \_sink f -> writer f
-compileChain cStore (CApply (reader,_) next) = do
-    mTrace "cc capply"
-    next' <- compileChain cStore next
-    return $ \sink a -> do
+compileChain :: Chain r a -> CompiledChain r a
+compileChain (CEvent _ next) = compileNode next
+compileChain (CMap _ f next) =
+    let !next' = compileNode next
+    in \sink -> next' sink . f
+
+compileChain (COut _) = (([] <$) .)
+compileChain (CAcc _ (PushCB _reader writer)) =
+    const $ return . pure . Right . writer
+
+compileChain (CAcc _ _) =
+    error "Impulse: attempt to accumulate to non-accumulating behavior!"
+compileChain (CApply _ cb next) =
+    let !next'  = compileNode next
+        !reader = readCB cb
+    in \sink a -> do
         f <- reader
         next' sink $! f a
-compileChain _ (CDynAp (reader,_)) = do
-    mTrace "cc cDynAp"
-    return $ \sink a -> do
-        (nextTs,nextBs) <- reader
-        mapM_ (\f -> f sink a) nextTs
-        mapM_ (\f -> f sink a) nextBs
+
+-- updating a dynamic behavior
+compileChain (CDynB _ (CBSwitch _ w)) =
+    \_sink newB -> do
+        let act = makeBehavior newB >>= liftIO . w
+        return [Left act]
+
+compileNode :: ChainNode (Chain r a) -> CompiledChain r a
+compileNode ChainNode{..} =
+    let nexts = map compileChain cnChildren
+    in foldl' (flip seq) () nexts `seq`
+        \sink a -> concat <$> mapM (\f -> f sink a) nexts

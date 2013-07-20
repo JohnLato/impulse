@@ -43,9 +43,6 @@ net4 = do
     (push2,boolE) <- newAddHandler
     reactimate $ putStrLn . ("r1 " ++) . show <$> e1
     reactimate $ putStrLn . ("r bool " ++) . show <$> boolE
-    -- this causes ghci to crash for some reason...
-    -- probably an incorrect unsafeCoerce somewhere
-    -- let opB = accumB (+) $ (\flag _ -> if flag then (+) else (-)) <$> boolE
     let opB = stepper (+) $ (\flag -> if flag then (+) else subtract) <$> boolE
         fnE  = applyB e1 opB
         sumB = accumB 0 fnE
@@ -85,4 +82,5 @@ instance Show (Behavior a) where
     show (BAcc l _ p) = "BAcc " ++ show l ++ " ( " ++ show p ++ ")"
     show (BMap l _ p) = "BMap " ++ show l ++ " ( " ++ show p ++ ")"
     show (BPure l _)  = "BPure " ++ show l
-    show (BApp l f p) = "BMap " ++ show l ++ " ( " ++ show f ++ ") ( " ++ show p ++ ")"
+    show (BApp l f p) = "BApp " ++ show l ++ " ( " ++ show f ++ ") ( " ++ show p ++ ")"
+    show (BSwch l b p) = "BSwch " ++ show l ++ " ( " ++ show b ++ ") ( " ++ show p ++ ")"

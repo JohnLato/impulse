@@ -1,10 +1,6 @@
 {-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE RecursiveDo #-}
 
 {-# OPTIONS_GHC -Wall #-}
 module Reactive.Impulse.Core
@@ -33,7 +29,6 @@ getLabel :: IO Label
 getLabel = do
     !x <- atomicModifyIORef' labelRef $ \l -> let n = succ l in (n,n)
     return x
-    
 
 data Event a where
     EIn    :: Label -> Event a
@@ -42,7 +37,8 @@ data Event a where
     EMap   :: Label -> (b -> a) -> Event b -> Event a
     EUnion :: Label -> Event a -> Event a -> Event a
     EApply :: Label -> Event b -> Behavior (b -> a) -> Event a
-    EDyn   :: Label -> Event (SGen a) -> Event a
+    -- ESwch  :: Label -> Behavior (Event a) -> Event a
+    -- EDyn   :: Label -> Event (SGen a) -> Event a
 
 instance Functor Event where
     fmap f e = EMap (unsafePerformIO getLabel) f e
@@ -56,12 +52,13 @@ data Behavior a where
     BMap   :: Label -> (b -> a) -> Behavior b -> Behavior a
     BPure  :: Label -> a -> Behavior a
     BApp   :: Label -> Behavior (b -> a) -> Behavior b -> Behavior a
+    BSwch  :: Label -> Behavior a -> Event (Behavior a) -> Behavior a
 
 instance Functor Behavior where
     fmap f b = BMap (unsafePerformIO getLabel) f b
 
 instance Applicative Behavior where
-    pure a = BPure (unsafePerformIO getLabel) a
+    pure a  = BPure (unsafePerformIO getLabel) a
     f <*> a = BApp (unsafePerformIO getLabel) f a
 
 -- extract the Label from an Event
@@ -73,7 +70,7 @@ eLabel = \case
     EMap lbl _ _   -> lbl
     EUnion lbl _ _ -> lbl
     EApply lbl _ _ -> lbl
-    EDyn lbl _     -> lbl
+    -- EDyn lbl _     -> lbl
 
 -----------------------------------------------------------
 
@@ -121,3 +118,8 @@ newAddHandler = do
     return (pusher,evt)
 
 -----------------------------------------------------------
+
+mTrace :: MonadIO m => String -> m ()
+mTrace = const $ return ()
+-- mTrace = liftIO . traceIO
+

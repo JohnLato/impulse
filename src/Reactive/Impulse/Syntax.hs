@@ -14,6 +14,7 @@ module Reactive.Impulse.Syntax (
 , accumB
 , applyB
 , sample
+, switchB
 , SGen
 , reactimate
 , newAddHandler
@@ -39,3 +40,6 @@ applyB e b = EApply (unsafePerformIO getLabel) e b
 
 sample :: Event a -> Behavior b -> Event b
 sample e = applyB e . (const <$>)
+
+switchB :: Behavior a -> Event (Behavior a) -> Behavior a
+switchB b0 e = BSwch (unsafePerformIO getLabel) b0 e
