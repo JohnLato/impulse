@@ -1,17 +1,24 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 {-# OPTIONS_GHC -Wall #-}
 module Reactive.Impulse.Core
 
 where
 
+import Reactive.Impulse.Weak
+
 import Control.Applicative
 import Control.Monad.State.Lazy
 
+import Control.Lens
+
+import Data.Semigroup
 import Data.IORef
-import Data.Monoid
+import Control.Concurrent.STM
+import qualified Data.Monoid as Monoid
 
 import System.IO.Unsafe (unsafePerformIO)
 import System.Mem.Weak  (deRefWeak)
@@ -43,7 +50,7 @@ data Event a where
 instance Functor Event where
     fmap f e = EMap (unsafePerformIO getLabel) f e
 
-instance Monoid (Event a) where
+instance Monoid.Monoid (Event a) where
     mempty  = EIn (unsafePerformIO getLabel)
     mappend = EUnion (unsafePerformIO getLabel)
 
@@ -76,23 +83,28 @@ eLabel = \case
 
 type SGen a = StateT SGState IO a
 
+data SGInput where
+    SGInput :: TVar (a -> IO ()) -> Event a -> SGInput
+
 data SGState = SGState
-    { inputs  :: [SGInput]
-    , outputs :: [Event (IO ())]
+    { _inputs  :: [SGInput]
+    , _outputs :: [Event (IO ())]
     }
+
+$(makeLenses ''SGState)
+
+instance Semigroup SGState where
+    l <> r = l & inputs <>~ r^.inputs & outputs <>~ r^.outputs
 
 instance Monoid SGState where
     mempty = SGState [] []
-    SGState li lo `mappend` SGState ri ro = SGState (li++ri) (lo ++ ro)
+    mappend = (<>)
 
 singleIn :: SGInput -> SGState
 singleIn i = SGState [i] []
 
 singleOut :: Event (IO ()) -> SGState
 singleOut o = SGState [] [o]
-
-data SGInput where
-    SGInput :: IORef (a -> IO ()) -> Event a -> SGInput
 
 reactimate :: Event (IO ()) -> SGen ()
 reactimate e = do
@@ -105,14 +117,13 @@ addInput sgi = modify (<> singleIn sgi)
 newAddHandler :: SGen ((a -> IO ()), Event a)
 newAddHandler = do
     (inp,pusher,evt) <- liftIO $ do
-        ref <- newIORef (const $ return ())
-        ref'w <- mkWeakIORef ref (return ())
+        ref <- newTVarIO (const $ return ())
+        ref'w <- mkWeakTVar ref Nothing
         lbl <- getLabel
         let evt = EIn lbl
             inp = SGInput ref evt
-            pusher a = deRefWeak ref'w >>= \case
-                Just aRef -> readIORef aRef >>= ($ a)
-                Nothing   -> return ()
+            pusher a = deRefWeak ref'w
+                        >>= maybe (return ()) (readTVarIO >=> ($ a))
         return (inp, pusher, evt)
     addInput inp
     return (pusher,evt)
