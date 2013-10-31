@@ -1,11 +1,6 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE RecursiveDo #-}
-
 {-# OPTIONS_GHC -Wall #-}
 module Reactive.Impulse.Syntax (
   Event
@@ -15,6 +10,7 @@ module Reactive.Impulse.Syntax (
 , applyB
 , sample
 , switchB
+, switchE
 , SGen
 , reactimate
 , newAddHandler
@@ -43,3 +39,6 @@ sample e = applyB e . (const <$>)
 
 switchB :: Behavior a -> Event (Behavior a) -> Behavior a
 switchB b0 e = BSwch (unsafePerformIO getLabel) b0 e
+
+switchE :: Behavior (Event a) -> Event a
+switchE b = ESwch (unsafePerformIO getLabel) b

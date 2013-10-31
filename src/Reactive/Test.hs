@@ -69,6 +69,32 @@ net4b = do
     liftIO $ print s2E
     return (push1,push2)
 
+-- test switchB (generates new behaviors on the fly, which should be GC'd after
+-- a switch)
+net5 :: SGen (Int -> IO (), () -> IO ())
+net5 = do
+    (push1,e1) <- newAddHandler
+    (push2,unitE) <- newAddHandler
+    reactimate $ putStrLn . ("r1 " ++) . show <$> e1
+    let mkB :: Int -> Behavior Int
+        mkB = pure
+        behaviorE = mkB <$> e1
+        curValE = sample unitE (switchB (pure 0) behaviorE)
+    reactimate $ putStrLn . ("curval " ++) . show <$> curValE
+    return (push1,push2)
+
+-- test switchE (flip-flop between two events)
+net6 :: SGen (Int -> IO (), Int -> IO (), Bool -> IO ())
+net6 = do
+    (push1,e1) <- newAddHandler
+    (push2,e2) <- newAddHandler
+    (push3,toggleE) <- newAddHandler
+    reactimate $ putStrLn . ("r1 " ++) . show <$> e1
+    reactimate $ putStrLn . ("r2 " ++) . show <$> e2
+    let eventB = (\x -> if x then e1 else e2) <$> stepper False toggleE
+        activeE = switchE eventB
+    reactimate $ putStrLn . ("pushed, got " ++) . show <$> activeE
+    return (push1,push2,push3)
 
 instance Show (Event a) where
     show (EIn l) = "EIn " ++ show l
@@ -77,6 +103,7 @@ instance Show (Event a) where
     show (EMap l _ p) = "EMap " ++ show l ++ " ( " ++ show p ++ ")"
     show (EUnion l p q) = "EUnion " ++ show l ++ " ( " ++ show p ++ ") ( " ++ show q ++ ")"
     show (EApply l e b) = "EApply " ++ show l ++ " ( " ++ show e ++ ") ( " ++ show b ++ ")"
+    show (ESwch l b) = "ESwch " ++ show l ++ " ( " ++ show b ++ ")"
 
 instance Show (Behavior a) where
     show (BAcc l _ p) = "BAcc " ++ show l ++ " ( " ++ show p ++ ")"
