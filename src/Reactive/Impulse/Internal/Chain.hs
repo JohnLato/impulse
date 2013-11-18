@@ -10,7 +10,7 @@
 -- All reactimate chains are performed in the order of the reactimate calls,
 -- then all behavior updates are performed (in an arbitrary order).
 
-module Reactive.Impulse.Chain (
+module Reactive.Impulse.Internal.Chain (
   buildTopChains
 , compileChain
 , insertAt
@@ -21,7 +21,7 @@ module Reactive.Impulse.Chain (
 
 import Reactive.Impulse.Core
 import Reactive.Impulse.Internal.Types
-import Reactive.Impulse.Weak
+import Reactive.Impulse.Internal.Weak
 
 import Control.Applicative
 import Control.Concurrent.STM

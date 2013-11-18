@@ -6,18 +6,18 @@
 {-# OPTIONS_GHC -Wall #-}
 -- The first step of compiling is to build all reactimated 'Event's into a
 -- graph.  The graph structure keeps track of the current heads.
-module Reactive.Impulse.Graph (
+module Reactive.Impulse.Internal.Graph (
   initialRunningDynGraph
 , compileHeadMap
 , dynUpdateGraph
 )
 where
 
-import Reactive.Impulse.Weak
 import Reactive.Impulse.Core
 import Reactive.Impulse.Internal.RWST hiding ((<>))
 import Reactive.Impulse.Internal.Types
-import Reactive.Impulse.Chain
+import Reactive.Impulse.Internal.Chain
+import Reactive.Impulse.Internal.Weak
 
 import Control.Applicative
 import Control.Concurrent.STM

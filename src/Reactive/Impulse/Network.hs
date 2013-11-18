@@ -9,8 +9,8 @@ module Reactive.Impulse.Network (
 
 import Reactive.Impulse.Core
 import Reactive.Impulse.Internal.Types
-import Reactive.Impulse.Chain
-import Reactive.Impulse.Graph
+import Reactive.Impulse.Internal.Chain
+import Reactive.Impulse.Internal.Graph
 
 import Control.Applicative
 import Control.Lens

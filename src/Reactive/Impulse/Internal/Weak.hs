@@ -2,7 +2,7 @@
 {-# LANGUAGE UnboxedTuples #-}
 
 {-# OPTIONS_GHC -Wall #-}
-module Reactive.Impulse.Weak (
+module Reactive.Impulse.Internal.Weak (
   mkWeakTVar
 , mkWeakTVarKey
 ) where
