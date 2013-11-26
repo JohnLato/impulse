@@ -416,13 +416,14 @@ compileChain (CSwch _ (CBSwitch ref)) =
         return [Mod actStep]
 
 compileChain (CDyn _ next) =
-    \sink newSGen -> return [DynMod $ actStep sink newSGen]
+    \sink newSGen -> do
+        (a,sgstate) <- runStateT newSGen mempty
+        return [DynMod (actStep sgstate) (next' sink a)]
     where
       !next'  = compileNode next
-      actStep sink newSGen = do
-        (a,sgstate) <- runStateT newSGen mempty
-        error "TODO"
-        -- next' sink a
+      actStep sgstate = do
+          buildTopChains (sgstate^.outputs)
+          scribe dlAddInp $ Endo ((sgstate^.inputs) ++)
 
 compileChain (CSwchE _ prevSetRef eventB cn) = 
     \_sink _ -> return [Mod actStep]

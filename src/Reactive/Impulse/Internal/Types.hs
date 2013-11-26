@@ -183,14 +183,15 @@ data DirtyLog = DirtyLog
     { _dlChains :: !DirtyChains
     , _dlEvents :: Endo [FireOnce]
     , _dlRemSet :: !ChainEdgeMap
+    , _dlAddInp :: Endo [SGInput]
     }
 
 instance Semigroup DirtyLog where
-    DirtyLog l1 l2 l3 <> DirtyLog r1 r2 r3 =
-     DirtyLog (l1<>r1) (l2<>r2) (l3<>r3)
+    DirtyLog l1 l2 l3 l4 <> DirtyLog r1 r2 r3 r4 =
+     DirtyLog (l1<>r1) (l2<>r2) (l3<>r3) (l4<>r4)
 
 instance Monoid DirtyLog where
-    mempty = DirtyLog mempty mempty mempty
+    mempty = DirtyLog mempty mempty mempty mempty
     mappend = (<>)
 
 -- The ModGraphM monad keeps track of a BuildingDynGraph during construction,
@@ -206,16 +207,30 @@ type ChainM = RWST BoundarySet DirtyLog BuildingDynGraph STM
 -- actions and returns an action to be performed afterwards.
 type CompiledChain r a = (r -> IO ()) -> a -> IO [UpdateStep]
 
+-- There are 3 phases to updates:
+--  1. Read from behaviors
+--  2. Run reactimated code
+--  3. Write to behaviors.
+--
+--  The first phase is handled by the IO result of CompiledChain.
+--  The second/third phases are inverted: we construct an action that writes to
+--  behaviors and returns the reactimation runners.  We do it this way as an
+--  artifact of using STM (although that's going to go away soon).
 data UpdateStep =
     Norm (STM (IO ()))
   | Mod  (ChainM ())
-  | DynMod (IO (ChainM ()))
+  | DynMod (ChainM ()) (IO [UpdateStep])
+  -- for DynMod, we first need to run the ChainM action to update the graph.
+  -- then we continue with running the update steps.  In this case, we need to
+  -- grab the extra IO layer to do the initial behavior readings after the
+  -- graph has been updated (since updating the graph may cause events to fire
+  -- and behaviors to update).
 
-useUpdateStep :: (STM (IO ()) -> b) -> (ChainM () -> b) -> (IO (ChainM ()) -> b) -> UpdateStep -> b
+useUpdateStep :: (STM (IO ()) -> b) -> (ChainM () -> b) -> (ChainM () -> IO [UpdateStep] -> b) -> UpdateStep -> b
 useUpdateStep f g h u = case u of
     Norm x -> f x
     Mod  x -> g x
-    DynMod x -> h x
+    DynMod x y -> h x y
 
 emptyCompiledChain :: CompiledChain r a
 emptyCompiledChain _ _ = return []

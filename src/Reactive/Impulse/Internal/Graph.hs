@@ -45,12 +45,17 @@ initialRunningDynGraph = do
 compileHeadMap :: SGState -> IO NetHeadMap
 compileHeadMap sg = do
     mapvar <- newTVarIO IM.empty
-    traverse (mkDynInput mapvar) (sg^.inputs) >>=
-        atomically . writeTVar mapvar . IM.fromList
+    addToHeadMap mapvar $ sg^.inputs
     return mapvar
+
+addToHeadMap :: NetHeadMap -> [SGInput] -> IO ()
+addToHeadMap mapvar sgInputs = do
+    currentHeads <- readTVarIO mapvar
+    traverse mkDynInput  (sgInputs) >>=
+        atomically . writeTVar mapvar . IM.union currentHeads . IM.fromList
   where
-    mkDynInput :: NetHeadMap -> SGInput -> IO (Label, EInput)
-    mkDynInput mapvar (SGInput t e) =
+    mkDynInput :: SGInput -> IO (Label, EInput)
+    mkDynInput (SGInput t e) =
         let !l = e^.label
             finishIt = Just . atomically $
                 modifyTVar' mapvar (IM.delete l)
@@ -69,7 +74,7 @@ runFireOnce net (FireOnce l a) = do
           _ -> error $ "impulse <runFireOnce>: chain expired: " ++ show l )
 
 -- dynamically update a network with the given ChainM building action
--- we convet the ChainM into a ModGraphM to update a frozen graph,
+-- we convert the ChainM into a ModGraphM to update a frozen graph,
 -- then freeze the network and run the ModGraphM against the now-frozen network.
 -- next we merge the results of the build step, recompile everything that's been
 -- marked dirty, and finally unfreeze the network, returning any 'onBuild'-type
@@ -85,13 +90,15 @@ dynUpdateGraph net builder = do
                 $ runRWST builder (boundSet baseGraph) baseBuilder
             put output
             return dirtyLog
-        blarh = do
+        doMergePrep = do
             dl <- runDyn
             prepareForMerge $ dl^.dlRemSet
             s <- get
             return (dl,s)
-    (dirties2,final,(dirtyLog,finalGraph)) <- replacingRunningGraph rg blarh
+    (dirties2,final,(dirtyLog,finalGraph)) <- replacingRunningGraph rg doMergePrep
     let pushEvents = appEndo (dirtyLog^.dlEvents) []
+        addNewHeads = addToHeadMap (net^.nInputs)
+                      $ appEndo (dirtyLog^.dlAddInp) []
         dirties = dirties2 <> dirtyLog^.dlChains
     knownInputs <- net^!nInputs.act readTVar
 
@@ -114,7 +121,7 @@ dynUpdateGraph net builder = do
               .unwrapped.act (recompile lbl))
         dirties
 
-    return $ final >> void (foldM checkFireOnce mempty pushEvents)
+    return $ final >> void (foldM checkFireOnce mempty pushEvents) >> addNewHeads
 
 -- perform an operation on a 'RunningDynGraph', and re-write it when
 -- finished.
@@ -241,7 +248,12 @@ runUpdates network doStep = withMVar (network^.nLock) $ \() -> do
     updateSteps <- doStep
     let runSteps :: UpdateStep -> IO (IO ())
         runSteps = useUpdateStep atomically (atomically . dynUpdateGraph network)
-                              (>>= atomically . dynUpdateGraph network)
+                              runDynStep
+        runDynStep chn dynActs = do
+            dynUpdateStep <- atomically $ dynUpdateGraph network chn
+            usteps2 <- dynActs
+            updateStep' <- mapM runSteps usteps2
+            return $ dynUpdateStep >> sequence_ updateStep'
     actions <- mapM runSteps updateSteps
     sequence_ actions
 
