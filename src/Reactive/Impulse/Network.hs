@@ -17,6 +17,7 @@ import Control.Lens
 import Control.Monad.RWS
 import Control.Monad.State
 import Control.Concurrent.STM
+import Control.Concurrent.MVar
 
 import qualified Data.IntMap as IM
 
@@ -33,8 +34,9 @@ compileNetwork net = do
     _nInputs <- compileHeadMap sgstate
     _nPaused <- newTVarIO Nothing
     _nActions <- newTVarIO (return ())
+    _nLock    <- newMVar ()
     runningGraph <- initialRunningDynGraph
-    let network = Network _nInputs runningGraph _nPaused _nActions
+    let network = Network _nInputs runningGraph _nPaused _nActions _nLock
         builder = buildTopChains (sgstate^.outputs)
     atomically $ do
         initialActions <- dynUpdateGraph network builder

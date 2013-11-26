@@ -13,6 +13,7 @@ import Reactive.Impulse.Internal.RWST hiding ((<>))
 
 import Control.Applicative
 import Control.Concurrent.STM
+import Control.Concurrent.MVar
 import Control.Lens
 import Control.Monad.Identity
 
@@ -62,6 +63,7 @@ data Chain r a where
     CSwch  :: Label -> CBSwitch (CBehavior a) -> Chain r (Behavior a)
     CSwchE :: Label -> TVar PrevSwchRef -> CBehavior (Event a)
               -> ChainNode (Chain r a) -> Chain r ()
+    CDyn   :: (a ~ SGen b) => Label -> ChainNode (Chain r b) -> Chain r a
 
 -- A CBehavior is the representation of a Behavior within a Chain.
 data CBehavior a =
@@ -78,6 +80,7 @@ instance Labelled (Chain r a) where
     label f (COut lbl)       = fmap (\l' -> COut l'      ) (f lbl)
     label f (CAcc lbl a)     = fmap (\l' -> CAcc l' a    ) (f lbl)
     label f (CApply lbl a b) = fmap (\l' -> CApply l' a b) (f lbl)
+    label f (CDyn lbl a)     = fmap (\l' -> CDyn l' a    ) (f lbl)
     label f (CSwch lbl a)    = fmap (\l' -> CSwch l' a   ) (f lbl)
     label f (CSwchE lbl tv a b) = fmap (\l' -> CSwchE l' tv a b) (f lbl)
 
@@ -154,6 +157,7 @@ data Network = Network
     , _nDynGraph :: RunningDynGraph
     , _nPaused   :: TVar (Maybe NetworkPausing)
     , _nActions  :: TVar (IO ())
+    , _nLock     :: MVar ()
     }
 
 data NetworkPausing = NetworkPausing
@@ -200,8 +204,18 @@ type ChainM = RWST BoundarySet DirtyLog BuildingDynGraph STM
 
 -- Takes two inputs, the final sink and a value.  Performs all real terminal
 -- actions and returns an action to be performed afterwards.
-type CompiledChain r a = (r -> IO ()) -> a -> STM [UpdateStep]
-type UpdateStep = Either (ChainM ()) (STM (IO ()))
+type CompiledChain r a = (r -> IO ()) -> a -> IO [UpdateStep]
+
+data UpdateStep =
+    Norm (STM (IO ()))
+  | Mod  (ChainM ())
+  | DynMod (IO (ChainM ()))
+
+useUpdateStep :: (STM (IO ()) -> b) -> (ChainM () -> b) -> (IO (ChainM ()) -> b) -> UpdateStep -> b
+useUpdateStep f g h u = case u of
+    Norm x -> f x
+    Mod  x -> g x
+    DynMod x -> h x
 
 emptyCompiledChain :: CompiledChain r a
 emptyCompiledChain _ _ = return []
@@ -209,6 +223,7 @@ emptyCompiledChain _ _ = return []
 $(makeIso ''ChainEdgeMap)
 $(makeIso ''DirtyChains)
 $(makePrisms ''CBehavior)
+$(makePrisms ''UpdateStep)
 $(makeLenses ''PrevSwchRef)
 $(makeLenses ''Network)
 $(makeLenses ''NetworkPausing)

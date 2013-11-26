@@ -27,6 +27,7 @@ import Control.Applicative
 import Control.Concurrent.STM
 import Control.Lens
 import Control.Monad.Identity
+import Control.Monad.State (runStateT)
 import Control.Monad.RWS
 
 import Data.Foldable (foldl')
@@ -65,6 +66,9 @@ insertAt parentLbl eChain chain = case chain of
     (CSwchE lbl prevSet a cn)
       | parentLbl == lbl -> CSwchE lbl prevSet a (cn <> eSingleton eChain)
       | otherwise -> CSwchE lbl prevSet a (pushNode cn parentLbl eChain)
+    (CDyn lbl cn)
+      | parentLbl == lbl -> CDyn lbl (cn <> eSingleton eChain)
+      | otherwise -> CDyn lbl (pushNode cn parentLbl eChain)
     (COut lbl)
       | parentLbl == lbl ->
           error $ "impulse <insertAt>: internal error, to COut " ++ show lbl
@@ -260,6 +264,11 @@ addChain childLbl evt@(ESwch lbl beh) = addBound childLbl lbl evt $ do
     added <- addChains True childLbl lbl evt (CSwchE lbl prevSet cbeh)
     scribe dlEvents $ Endo (FireOnce lbl () :)
     when added $ addChain lbl onChangedE
+addChain childLbl evt@(EDyn lbl prevE) = addBound childLbl lbl evt $ do
+    mTrace $ "EDyn " ++ show lbl
+    added <- addChains False childLbl lbl evt (CDyn lbl)
+    when added (addChain lbl prevE)
+    
 
 tracebackMkWeakHeads :: Event k -> ChainM ()
 tracebackMkWeakHeads e = case e of
@@ -270,6 +279,7 @@ tracebackMkWeakHeads e = case e of
     EUnion _ e1 e2 -> tracebackMkWeakHeads e1 >> tracebackMkWeakHeads e2
     EApply _ e' _  -> tracebackMkWeakHeads e'
     ESwch _ _      -> return ()
+    EDyn _ e'      -> tracebackMkWeakHeads e'
 
 addChains
     :: (r ~ IO ())
@@ -386,15 +396,15 @@ compileChain (CMap _ f next) =
     in \sink -> next' sink . f
 
 compileChain (COut _) =
-    \sink a -> return [Right (return (sink a))]
+    \sink a -> return [Norm (return (sink a))]
 compileChain (CAcc _ (PushCB ref)) =
-    const $ return . pure . Right . (return () <$) . modifyTVar' ref
+    const $ return . pure . Norm . (return () <$) . modifyTVar' ref
 
 compileChain (CAcc _ _) =
     error "impulse <compileChain>: attempt to accumulate to non-accumulating behavior!"
 compileChain (CApply _ cb next) =
     let !next'  = compileNode next
-        !apReader = readCB cb
+        !apReader = atomically $ readCB cb
     in \sink a -> do
         f <- apReader
         next' sink $! f a
@@ -403,10 +413,19 @@ compileChain (CApply _ cb next) =
 compileChain (CSwch _ (CBSwitch ref)) =
     \_sink newB -> do
         let actStep = makeBehavior newB >>= lift . writeTVar ref
-        return [Left actStep]
+        return [Mod actStep]
+
+compileChain (CDyn _ next) =
+    \sink newSGen -> return [DynMod $ actStep sink newSGen]
+    where
+      !next'  = compileNode next
+      actStep sink newSGen = do
+        (a,sgstate) <- runStateT newSGen mempty
+        error "TODO"
+        -- next' sink a
 
 compileChain (CSwchE _ prevSetRef eventB cn) = 
-    \_sink _ -> return [Left actStep]
+    \_sink _ -> return [Mod actStep]
     where
       tmpHead e = IM.insertWith (const id) (e^.label) $ Identity e
       actStep = do

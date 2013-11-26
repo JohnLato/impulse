@@ -21,6 +21,7 @@ import Reactive.Impulse.Internal.Weak
 
 import Control.Applicative
 import Control.Concurrent.STM
+import Control.Concurrent.MVar (withMVar)
 import Control.Lens
 import Control.Monad.Identity
 
@@ -235,11 +236,14 @@ prepareForMerge cem = do
 boundSet :: BuildingDynGraph -> BoundarySet
 boundSet g = g^.dgHeads.unwrapped.traverse.unwrapped.cBoundarySet
 
-runUpdates :: Network -> STM [UpdateStep] -> IO ()
-runUpdates network doStep = (atomically $ doStep >>= runStep) >>= sequence_
-  where
-    runStep :: [UpdateStep] -> STM [IO ()]
-    runStep = sequence.map (either (dynUpdateGraph network) id)
+runUpdates :: Network -> IO [UpdateStep] -> IO ()
+runUpdates network doStep = withMVar (network^.nLock) $ \() -> do
+    updateSteps <- doStep
+    let runSteps :: UpdateStep -> IO (IO ())
+        runSteps = useUpdateStep atomically (atomically . dynUpdateGraph network)
+                              (>>= atomically . dynUpdateGraph network)
+    actions <- mapM runSteps updateSteps
+    sequence_ actions
 
 ------------------------------------------------------------------
 -- helpers for handling weak refs.
