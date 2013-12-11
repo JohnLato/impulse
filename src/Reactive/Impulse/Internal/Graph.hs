@@ -51,7 +51,9 @@ compileHeadMap sg = do
 addToHeadMap :: NetHeadMap -> [SGInput] -> IO ()
 addToHeadMap mapvar sgInputs = do
     currentHeads <- readTVarIO mapvar
-    traverse mkDynInput  (sgInputs) >>=
+    mTrace $ "curHeads" ++ show (IM.keys currentHeads)
+    mTrace $ "addHeads" ++ show sgInputs
+    traverse mkDynInput sgInputs >>=
         atomically . writeTVar mapvar . IM.union currentHeads . IM.fromList
   where
     mkDynInput :: SGInput -> IO (Label, EInput)
