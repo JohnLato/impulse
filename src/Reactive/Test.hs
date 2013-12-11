@@ -96,6 +96,15 @@ net6 = do
     reactimate $ putStrLn . ("pushed, got " ++) . show <$> activeE
     return (push1,push2,push3)
 
+-- simple test of DynE
+net7 :: SGen (Int -> IO (), () -> IO ())
+net7 = do
+    (push1,inpE) <- newAddHandler
+    (push2,doSwitchE) <- newAddHandler
+    let curFnB = stepper (const $ return ()) (fst <$> dynE (net2 <$ doSwitchE))
+    reactimate $ applyB inpE curFnB
+    return (push1,push2)
+
 instance Show (Event a) where
     show (EIn l) = "EIn " ++ show l
     show (EOut l p) = "EOut " ++ show l ++ " ( " ++ show p ++ ")"
