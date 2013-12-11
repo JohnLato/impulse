@@ -21,6 +21,7 @@ import Data.IntMap (IntMap)
 import qualified Data.IntMap as IM
 import qualified Data.IntSet as IntSet
 import qualified Data.Monoid as Monoid
+import Data.Tree
 import Data.Semigroup
 
 import Unsafe.Coerce
@@ -54,6 +55,7 @@ data ChainNode t = ChainNode
     { _cnChildren  :: [ t ]    -- direct children of this node
     , _cnPushSet   :: ChainSet -- all transitive children of this node
     } deriving Functor
+
 data Chain r a where
     CEvent :: Label -> ChainNode (Chain r a) -> Chain r a
     CMap   :: Label -> (a -> b) -> ChainNode (Chain r b) -> Chain r a
@@ -307,3 +309,19 @@ cBoundarySet = to f.boundarySet
     f (EChain _ (CApply l _ n)) = IntSet.insert l $ n^.cnPushSet
     f e              = IntSet.singleton (e^.label)
 
+chainLabelTree :: Chain r a -> Tree String
+chainLabelTree c =
+    Node {rootLabel = thisLbl ++ (c^.label.to show), subForest = mkForest }
+  where
+    (thisLbl,mkForest) = case c of
+        (CEvent _ n)     -> ("CEvent ", map chainLabelTree $ n^.cnChildren)
+        (CMap _ _ n)     -> ("CMap "  , map chainLabelTree $ n^.cnChildren)
+        (CApply _ _ n)   -> ("CApply ", map chainLabelTree $ n^.cnChildren)
+        (CSwchE _ _ _ n) -> ("CSwchE ", map chainLabelTree $ n^.cnChildren)
+        CDyn _ n         -> ("CDyn ",   map chainLabelTree $ n^.cnChildren)
+        COut{}  -> ("COut " , [])
+        CSwch{} -> ("CSwch ", [])
+        CAcc{}  -> ("CAcc " , [])
+
+showChainTree :: Chain r a -> String
+showChainTree = drawTree . chainLabelTree
