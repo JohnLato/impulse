@@ -83,6 +83,8 @@ type SGen a = StateT SGState IO a
 
 data SGInput where
     SGInput :: TVar (a -> IO ()) -> Event a -> SGInput
+instance Show SGInput where
+    show (SGInput _ e) = "SGInput (" ++ show (e^.label) ++ ")"
 
 data SGState = SGState
     { _inputs  :: [SGInput]
