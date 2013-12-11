@@ -11,6 +11,7 @@ module Reactive.Impulse.Syntax (
 , sample
 , switchB
 , switchE
+, dynE
 , SGen
 , reactimate
 , newAddHandler
@@ -42,3 +43,6 @@ switchB b0 e = BSwch (unsafePerformIO getLabel) b0 e
 
 switchE :: Behavior (Event a) -> Event a
 switchE b = ESwch (unsafePerformIO getLabel) b
+
+dynE :: Event (SGen a) -> Event a
+dynE e = EDyn (unsafePerformIO getLabel) e
