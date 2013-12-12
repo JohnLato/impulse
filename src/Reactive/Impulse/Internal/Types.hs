@@ -158,7 +158,7 @@ data Network = Network
     { _nInputs   :: NetHeadMap
     , _nDynGraph :: RunningDynGraph
     , _nPaused   :: TVar (Maybe NetworkPausing)
-    , _nActions  :: TVar (IO ())
+    , _nActions  :: TVar (IO ())                -- actions to be run on init.
     , _nLock     :: MVar ()
     }
 
