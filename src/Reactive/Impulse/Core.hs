@@ -19,6 +19,8 @@ import qualified Data.Monoid as Monoid
 
 import System.IO.Unsafe (unsafePerformIO)
 
+import Debug.Trace
+
 -----------------------------------------------------------
 -- evil label stuff
 
@@ -129,6 +131,6 @@ newAddHandler = do
 -----------------------------------------------------------
 
 mTrace :: Monad m => String -> m ()
-mTrace = const $ return ()
--- mTrace t = trace t $ return ()
+-- mTrace = const $ return ()
+mTrace t = trace t $ return ()
 

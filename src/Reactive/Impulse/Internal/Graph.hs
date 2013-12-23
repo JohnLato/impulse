@@ -108,7 +108,8 @@ dynUpdateGraph net builder = do
         recompile lbl (EChain _ c) = IM.lookup lbl knownInputs^!_Just.act (
           \(EInput wk) -> wk^!act (unsafeIOToSTM .deRefWeak)._Just.act (
           \pushVar -> let cc = compileChain (unsafeCoerce c) id
-                      in writeTVar pushVar $ runUpdates net . cc ))
+                      in do mTrace $ showChainTree c
+                            writeTVar pushVar $ runUpdates net . cc ))
 
         -- we only want to run the action for each node once.  For some reason
         -- I think we may have multiple occurrences of them.
