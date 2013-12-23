@@ -13,3 +13,4 @@ module Reactive.Impulse (
 
 import Reactive.Impulse.Network as M
 import Reactive.Impulse.Syntax as M
+import Reactive.Impulse.Syntax2 as M
