@@ -59,12 +59,15 @@ data ChainNode t = ChainNode
 data Chain r a where
     CEvent :: Label -> ChainNode (Chain r a) -> Chain r a
     CMap   :: Label -> (a -> b) -> ChainNode (Chain r b) -> Chain r a
+    CFilt  :: Label -> (a -> Maybe b) -> ChainNode (Chain r b) -> Chain r a
     COut   :: Label -> Chain (IO ()) (IO ())
     CAcc   :: Label -> CBehavior a -> Chain r (a->a)
     CApply :: Label -> CBehavior (a -> b) -> ChainNode (Chain r b) -> Chain r a
     CSwch  :: Label -> CBSwitch (CBehavior a) -> Chain r (Behavior a)
     CSwchE :: Label -> TVar PrevSwchRef -> CBehavior (Event a)
               -> ChainNode (Chain r a) -> Chain r ()
+    CJoin  :: (a ~ Event b) => Label -> TVar PrevSwchRef
+              -> ChainNode (Chain r b) -> Chain r a
     CDyn   :: (a ~ SGen b) => Label -> ChainNode (Chain r b) -> Chain r a
 
 -- A CBehavior is the representation of a Behavior within a Chain.
@@ -79,10 +82,12 @@ data CBSwitch a = CBSwitch (TVar a) -- (IO a) (a -> IO ())
 instance Labelled (Chain r a) where
     label f (CEvent lbl a)   = fmap (\l' -> CEvent l' a  ) (f lbl)
     label f (CMap lbl a b)   = fmap (\l' -> CMap l' a b  ) (f lbl)
+    label f (CFilt lbl a b)  = fmap (\l' -> CFilt l' a b ) (f lbl)
     label f (COut lbl)       = fmap (\l' -> COut l'      ) (f lbl)
     label f (CAcc lbl a)     = fmap (\l' -> CAcc l' a    ) (f lbl)
     label f (CApply lbl a b) = fmap (\l' -> CApply l' a b) (f lbl)
     label f (CDyn lbl a)     = fmap (\l' -> CDyn l' a    ) (f lbl)
+    label f (CJoin lbl a b)  = fmap (\l' -> CJoin l' a b ) (f lbl)
     label f (CSwch lbl a)    = fmap (\l' -> CSwch l' a   ) (f lbl)
     label f (CSwchE lbl tv a b) = fmap (\l' -> CSwchE l' tv a b) (f lbl)
 
@@ -277,8 +282,10 @@ cPushSet' = to f
   where
     f (CEvent l n)     = IntSet.singleton l <> n^.cnPushSet
     f (CMap l _ n)     = IntSet.singleton l <> n^.cnPushSet
+    f (CFilt l _ n)    = IntSet.singleton l <> n^.cnPushSet
     f (CApply l _ n)   = IntSet.singleton l <> n^.cnPushSet
     f (CSwchE l _ _ n) = IntSet.singleton l <> n^.cnPushSet
+    f (CJoin l _ n)    = IntSet.singleton l <> n^.cnPushSet
     f c                = IntSet.singleton (c^.label)
 
 cPushSet :: IndexPreservingGetter (Chain r a) (Maybe ChainSet)
@@ -286,8 +293,10 @@ cPushSet = to f
   where
     f (CEvent _ n)     = Just $ n^.cnPushSet
     f (CMap _ _ n)     = Just $ n^.cnPushSet
+    f (CFilt _ _ n)    = Just $ n^.cnPushSet
     f (CApply _ _ n)   = Just $ n^.cnPushSet
     f (CSwchE _ _ _ n) = Just $ n^.cnPushSet
+    f (CJoin _ _ n)    = Just $ n^.cnPushSet
     f _                = Nothing
 
 $(makeIso ''BoundaryMap)
@@ -306,7 +315,9 @@ cBoundarySet = to f.boundarySet
   where
     f (EChain _ (CEvent l n))   = IntSet.insert l $ n^.cnPushSet
     f (EChain _ (CMap l _ n))   = IntSet.insert l $ n^.cnPushSet
+    f (EChain _ (CFilt l _ n))  = IntSet.insert l $ n^.cnPushSet
     f (EChain _ (CApply l _ n)) = IntSet.insert l $ n^.cnPushSet
+    f (EChain _ (CJoin l _ n))  = IntSet.insert l $ n^.cnPushSet
     f e              = IntSet.singleton (e^.label)
 
 chainLabelTree :: Chain r a -> Tree String
@@ -316,8 +327,10 @@ chainLabelTree c =
     (thisLbl,mkForest) = case c of
         (CEvent _ n)     -> ("CEvent ", map chainLabelTree $ n^.cnChildren)
         (CMap _ _ n)     -> ("CMap "  , map chainLabelTree $ n^.cnChildren)
+        (CFilt _ _ n)    -> ("CFilt " , map chainLabelTree $ n^.cnChildren)
         (CApply _ _ n)   -> ("CApply ", map chainLabelTree $ n^.cnChildren)
         (CSwchE _ _ _ n) -> ("CSwchE ", map chainLabelTree $ n^.cnChildren)
+        (CJoin _ _ n)    -> ("CJoin " , map chainLabelTree $ n^.cnChildren)
         CDyn _ n         -> ("CDyn ",   map chainLabelTree $ n^.cnChildren)
         COut{}  -> ("COut " , [])
         CSwch{} -> ("CSwch ", [])

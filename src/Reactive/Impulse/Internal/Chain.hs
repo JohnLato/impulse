@@ -63,12 +63,18 @@ insertAt parentLbl eChain chain = case chain of
     (CMap lbl f cn)
       | parentLbl == lbl -> CMap lbl f (cn <> eSingleton eChain)
       | otherwise -> CMap lbl f (pushNode cn parentLbl eChain)
+    (CFilt lbl p cn)
+      | parentLbl == lbl -> CFilt lbl p (cn <> eSingleton eChain)
+      | otherwise -> CFilt lbl p (pushNode cn parentLbl eChain)
     (CSwchE lbl prevSet a cn)
       | parentLbl == lbl -> CSwchE lbl prevSet a (cn <> eSingleton eChain)
       | otherwise -> CSwchE lbl prevSet a (pushNode cn parentLbl eChain)
     (CDyn lbl cn)
       | parentLbl == lbl -> CDyn lbl (cn <> eSingleton eChain)
       | otherwise -> CDyn lbl (pushNode cn parentLbl eChain)
+    (CJoin lbl prevSet cn)
+      | parentLbl == lbl -> CJoin lbl prevSet (cn <> eSingleton eChain)
+      | otherwise -> CJoin lbl prevSet (pushNode cn parentLbl eChain)
     (COut lbl)
       | parentLbl == lbl ->
           error $ "impulse <insertAt>: internal error, to COut " ++ show lbl
@@ -247,6 +253,10 @@ addChain childLbl evt@(EMap lbl f prevE) = addBound childLbl lbl evt $ do
     mTrace $ "EMap " ++ show lbl
     added <- addChains False childLbl lbl evt (CMap lbl f)
     when added (addChain lbl prevE)
+addChain childLbl evt@(EFilt lbl p prevE) = addBound childLbl lbl evt $ do
+    mTrace $ "EFilt " ++ show lbl
+    added <- addChains False childLbl lbl evt (CFilt lbl p)
+    when added (addChain lbl prevE)
 addChain childLbl evt@(EUnion lbl prev1 prev2) = addBound childLbl lbl evt $ do
     mTrace $ "EUnion " ++ show lbl
     added <- addChains False childLbl lbl evt (CEvent lbl)
@@ -264,11 +274,15 @@ addChain childLbl evt@(ESwch lbl beh) = addBound childLbl lbl evt $ do
     added <- addChains True childLbl lbl evt (CSwchE lbl prevSet cbeh)
     scribe dlEvents $ Endo (FireOnce lbl () :)
     when added $ addChain lbl onChangedE
+addChain childLbl evt@(EJoin lbl prevE) = addBound childLbl lbl evt $ do
+    mTrace $ "EJoin " ++ show lbl
+    prevSet <- lift $ newTVar emptyPrevSwchRef
+    added <- addChains True childLbl lbl evt (CJoin lbl prevSet)
+    when added (addChain lbl prevE)
 addChain childLbl evt@(EDyn lbl prevE) = addBound childLbl lbl evt $ do
     mTrace $ "EDyn " ++ show lbl
     added <- addChains False childLbl lbl evt (CDyn lbl)
     when added (addChain lbl prevE)
-    
 
 tracebackMkWeakHeads :: Event k -> ChainM ()
 tracebackMkWeakHeads e = case e of
@@ -276,9 +290,11 @@ tracebackMkWeakHeads e = case e of
     EOut _ e'      -> tracebackMkWeakHeads e'
     ENull _ e'     -> tracebackMkWeakHeads e'
     EMap _ _ e'    -> tracebackMkWeakHeads e'
+    EFilt _ _ e'   -> tracebackMkWeakHeads e'
     EUnion _ e1 e2 -> tracebackMkWeakHeads e1 >> tracebackMkWeakHeads e2
     EApply _ e' _  -> tracebackMkWeakHeads e'
     ESwch _ _      -> return ()
+    EJoin _ e'     -> tracebackMkWeakHeads e'
     EDyn _ e'      -> tracebackMkWeakHeads e'
 
 addChains
@@ -395,6 +411,10 @@ compileChain (CMap _ f next) =
     let !next' = compileNode next
     in \sink -> next' sink . f
 
+compileChain (CFilt _ p next) =
+    let !next' = compileNode next
+    in \sink -> maybe (return []) (next' sink) . p
+
 compileChain (COut _) =
     \sink a -> return [Norm (return (sink a))]
 compileChain (CAcc _ (PushCB ref)) =
@@ -459,6 +479,36 @@ compileChain (CSwchE _ prevSetRef eventB cn) =
           -- TODO: this traverses the pushset a few times, which might be bad.
           -- Although I doubt it'll ever be large, we could get it down to
           -- a single traversal somehow.
+          g <- get
+          let missingChains = cn^.cnChildren.folded.to
+                  (\c -> let l = c^.label
+                         in if chainExists l g then mempty else IM.singleton l c)
+          dgHeads.unwrapped %= \im ->
+            foldrOf (folded.to (EChain False)) tmpHead im missingChains
+          pushSet^!members.act (flip addChain newE)
+
+compileChain (CJoin _ prevSetRef cn) =
+    \sink newE -> return [Mod $ actStep newE]
+    where
+      tmpHead e = IM.insertWith (const id) (e^.label) $ Identity e
+      actStep newE = do
+          -- see notes for CSwchE
+          let pushSet = cn^.cnChildren.folded.label.to (IntSet.singleton)
+          (newE,pVals) <- lift $ do
+              pVals <- readTVar prevSetRef
+              writeTVar prevSetRef $ PrevSwchRef
+                { _psrEdgeMap = simpleEdgeMap (newE^.label) pushSet
+                , _psrMkWeaks = tracebackMkWeakHeads newE
+                }
+              return (newE, pVals)
+          let prevSet = pVals^.psrEdgeMap
+          pVals^.psrMkWeaks
+          dgHeads.unwrapped.traverse.unwrapped %= \(EChain p c) ->
+              EChain p $ removeEdges prevSet c
+          tell $ mempty
+                  & dlChains .~ (prevSet^.from chainEdgeMap.to IM.keysSet.dirtyChains)
+                  & dlRemSet .~ prevSet
+
           g <- get
           let missingChains = cn^.cnChildren.folded.to
                   (\c -> let l = c^.label

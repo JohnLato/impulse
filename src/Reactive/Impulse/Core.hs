@@ -43,9 +43,11 @@ data Event a where
     EOut   :: Label -> Event (IO ()) -> Event (IO ())
     ENull  :: Label -> Event a -> Event a
     EMap   :: Label -> (b -> a) -> Event b -> Event a
+    EFilt  :: Label -> (b -> Maybe a) -> Event b -> Event a
     EUnion :: Label -> Event a -> Event a -> Event a
     EApply :: Label -> Event b -> Behavior (b -> a) -> Event a
     ESwch  :: Label -> Behavior (Event a) -> Event a
+    EJoin  :: Label -> Event (Event a) -> Event a
     EDyn   :: Label -> Event (SGen a) -> Event a
 
 instance Labelled (Event a) where
@@ -53,9 +55,11 @@ instance Labelled (Event a) where
     label f (EOut lbl a)     = fmap (\l' -> (EOut l' a)    ) (f lbl)
     label f (ENull lbl a)    = fmap (\l' -> (ENull l' a)   ) (f lbl)
     label f (EMap lbl a b)   = fmap (\l' -> (EMap l' a b)  ) (f lbl)
+    label f (EFilt lbl a b)  = fmap (\l' -> (EFilt l' a b) ) (f lbl)
     label f (EUnion lbl a b) = fmap (\l' -> (EUnion l' a b)) (f lbl)
     label f (EApply lbl a b) = fmap (\l' -> (EApply l' a b)) (f lbl)
     label f (ESwch lbl a)    = fmap (\l' -> (ESwch l' a)   ) (f lbl)
+    label f (EJoin lbl e)    = fmap (\l' -> (EJoin l' e)   ) (f lbl)
     label f (EDyn lbl e)     = fmap (\l' -> (EDyn l' e)    ) (f lbl)
 
 instance Functor Event where
