@@ -61,3 +61,11 @@ filterE p e = EFilt (unsafePerformIO getLabel) p e
 
 joinE :: Event (Event a) -> Event a
 joinE e = EJoin (unsafePerformIO getLabel) e
+
+onCreation :: a -> SGen (Event a)
+onCreation a = do
+    lbl <- liftIO $ getLabel
+    let evt = EIn lbl
+        dirty = FireOnce lbl a
+    error "TODO: onCreation: need to make sure the head exists, and need to add a dirty log to SGen"
+    return evt
