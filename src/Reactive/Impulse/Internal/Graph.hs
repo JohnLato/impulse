@@ -34,6 +34,7 @@ import Data.Semigroup
 
 import System.Mem.Weak
 import GHC.Conc.Sync (unsafeIOToSTM)
+import System.IO.Unsafe (unsafePerformIO)
 import Unsafe.Coerce
 
 initialRunningDynGraph :: IO RunningDynGraph
@@ -119,12 +120,15 @@ dynUpdateGraph net builder = do
           | IntSet.member (fo^.label) acc = return acc
           | otherwise = IntSet.insert (fo^.label) acc <$ runFireOnce net fo
 
+    mTrace $ "final graph chains:\n" ++ unlines (finalGraph^.dgHeads.unwrapped.traverse.unwrapped.to (\(EChain _ x) -> [showChainTree x]))
+    mTrace "*** end ***"
     mapMOf_ (from dirtyChains.members)
         (\lbl -> finalGraph ^! dgHeads.unwrapped.to (IM.lookup lbl)._Just
               .unwrapped.act (recompile lbl))
         dirties
 
-    return $ final >> void (foldM checkFireOnce mempty pushEvents) >> addNewHeads
+    let curChains = atomically $ net^!nDynGraph.dgHeads.act readTVar.traverse.act (unsafeIOToSTM.deRefWeak)._Just.to (\(EChain _ x) -> [showChainTree x])
+    return $ final >> void (foldM checkFireOnce mempty pushEvents) >> addNewHeads >> mTrace ("Current heads\n" ++ (unlines $ unsafePerformIO curChains))
 
 -- perform an operation on a 'RunningDynGraph', and re-write it when
 -- finished.
