@@ -69,6 +69,7 @@ net4b = do
     liftIO $ print s2E
     return (push1,push2)
 
+-- currently works
 -- test switchB (generates new behaviors on the fly, which should be GC'd after
 -- a switch)
 net5 :: SGen (Int -> IO (), () -> IO ())
@@ -83,6 +84,7 @@ net5 = do
     reactimate $ putStrLn . ("curval " ++) . show <$> curValE
     return (push1,push2)
 
+-- currently works
 -- test switchE (flip-flop between two events)
 net6 :: SGen (Int -> IO (), Int -> IO (), Bool -> IO ())
 net6 = do
@@ -96,6 +98,7 @@ net6 = do
     reactimate $ putStrLn . ("pushed, got " ++) . show <$> activeE
     return (push1,push2,push3)
 
+-- TODO: currently fails!
 -- simple test of DynE
 net7 :: SGen (Int -> IO (), () -> IO ())
 net7 = do

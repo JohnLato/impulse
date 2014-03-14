@@ -64,6 +64,23 @@ addToHeadMap mapvar sgInputs = do
                 modifyTVar' mapvar (IM.delete l)
         in (l,) . EInput <$> mkWeakTVar t finishIt 
 
+addToHeadMap' :: NetHeadMap -> [SGInput] -> STM ()
+addToHeadMap' mapvar sgInputs = do
+    currentHeads <- readTVar mapvar
+    mTrace $ "curHeads" ++ show (IM.keys currentHeads)
+    traverse mkDynInput sgInputs >>=
+        writeTVar mapvar . IM.union currentHeads . IM.fromList
+    currentHeads2 <- readTVar mapvar
+    mTrace $ "curHeads(added)" ++ show (IM.keys currentHeads2)
+  where
+    mkDynInput :: SGInput -> STM (Label, EInput)
+    mkDynInput (SGInput t e) =
+        let !l = e^.label
+            finishIt = Just . atomically $
+                modifyTVar' mapvar (IM.delete l)
+        in unsafeIOToSTM $ (l,) . EInput <$> mkWeakTVar t finishIt 
+
+
 runFireOnce :: Network -> FireOnce -> IO ()
 runFireOnce net (FireOnce l a) = do
     nIn <- net^!nInputs.act readTVarIO
@@ -100,9 +117,11 @@ dynUpdateGraph net builder = do
             return (dl,s)
     (dirties2,final,(dirtyLog,finalGraph)) <- replacingRunningGraph rg doMergePrep
     let pushEvents = appEndo (dirtyLog^.dlEvents) []
-        addNewHeads = addToHeadMap (net^.nInputs)
+        addNewHeads = addToHeadMap' (net^.nInputs)
                       $ appEndo (dirtyLog^.dlAddInp) []
+
         dirties = dirties2 <> dirtyLog^.dlChains
+    addNewHeads
     knownInputs <- net^!nInputs.act readTVar
 
     let recompile :: Label -> EChain -> STM ()
@@ -128,7 +147,7 @@ dynUpdateGraph net builder = do
         dirties
 
     let curChains = atomically $ net^!nDynGraph.dgHeads.act readTVar.traverse.act (unsafeIOToSTM.deRefWeak)._Just.to (\(EChain _ x) -> [showChainTree x])
-    return $ final >> void (foldM checkFireOnce mempty pushEvents) >> addNewHeads >> mTrace ("Current heads\n" ++ (unlines $ unsafePerformIO curChains))
+    return $ final >> void (foldM checkFireOnce mempty pushEvents) >> mTrace ("Current heads\n" ++ (unlines $ unsafePerformIO curChains))
 
 -- perform an operation on a 'RunningDynGraph', and re-write it when
 -- finished.
@@ -250,6 +269,12 @@ prepareForMerge cem = do
 boundSet :: BuildingDynGraph -> BoundarySet
 boundSet g = g^.dgHeads.unwrapped.traverse.unwrapped.cBoundarySet
 
+-- TODO: got a recursive lock problem.  Need to fix it.
+-- The input TVar needs to include a lock context.  Any actions run from
+-- outside the network have to be wrapped to provide an empty context,
+-- which can then be passed in to every internal call.
+-- But how do I know internally that we're calling a network input?
+-- Going to have to look at the values returned from SGen
 runUpdates :: Network -> IO [UpdateStep] -> IO ()
 runUpdates network doStep = withMVar (network^.nLock) $ \() -> do
     updateSteps <- doStep
