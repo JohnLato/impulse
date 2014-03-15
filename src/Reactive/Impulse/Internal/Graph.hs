@@ -53,9 +53,10 @@ addToHeadMap :: NetHeadMap -> [SGInput] -> IO ()
 addToHeadMap mapvar sgInputs = do
     currentHeads <- readTVarIO mapvar
     mTrace $ "curHeads" ++ show (IM.keys currentHeads)
-    mTrace $ "addHeads" ++ show sgInputs
     traverse mkDynInput sgInputs >>=
         atomically . writeTVar mapvar . IM.union currentHeads . IM.fromList
+    currentHeads2 <- readTVarIO mapvar
+    mTrace $ "curHeads(added)" ++ show (IM.keys currentHeads2)
   where
     mkDynInput :: SGInput -> IO (Label, EInput)
     mkDynInput (SGInput t e) =
