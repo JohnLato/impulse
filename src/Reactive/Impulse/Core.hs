@@ -175,6 +175,6 @@ newAddHandler = do
 -----------------------------------------------------------
 
 mTrace :: Monad m => String -> m ()
--- mTrace = const $ return ()
-mTrace t = trace t $ return ()
+mTrace = const $ return ()
+-- mTrace t = trace t $ return ()
 
