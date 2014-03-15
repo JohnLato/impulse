@@ -152,19 +152,13 @@ instance Monoid SGState where
     mempty = SGState [] [] mempty
     mappend = (<>)
 
-singleIn :: SGInput -> SGState
-singleIn i = SGState [i] []
-
-singleOut :: Event (IO ()) -> SGState
-singleOut o = SGState [] [o]
-
 reactimate :: Event (IO ()) -> SGen ()
 reactimate e = do
     lbl <- liftIO $ getLabel
-    modify (<> singleOut (EOut lbl e))
+    outputs %= (EOut lbl e:)
 
 addInput :: SGInput -> SGen ()
-addInput sgi = modify (<> singleIn sgi)
+addInput sgi = inputs %= (sgi:)
 
 newAddHandler :: SGen ((a -> IO ()), Event a)
 newAddHandler = do
