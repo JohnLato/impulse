@@ -277,7 +277,8 @@ boundSet g = g^.dgHeads.unwrapped.traverse.unwrapped.cBoundarySet
 -- But how do I know internally that we're calling a network input?
 -- Going to have to look at the values returned from SGen
 runUpdates :: Network -> IO [UpdateStep] -> IO ()
-runUpdates network doStep = withMVar (network^.nLock) $ \() -> do
+-- runUpdates network doStep = withMVar (network^.nLock) $ \() -> do
+runUpdates network doStep = do
     updateSteps <- doStep
     let runSteps :: UpdateStep -> IO (IO ())
         runSteps = useUpdateStep atomically (atomically . dynUpdateGraph network)
