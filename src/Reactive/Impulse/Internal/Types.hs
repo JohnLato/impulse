@@ -27,17 +27,6 @@ import Data.Semigroup
 import Unsafe.Coerce
 import System.Mem.Weak
 
-type ChainSet = IntSet.IntSet
-
-newtype ChainEdgeMap = ChainEdgeMap (IntMap ChainSet) deriving (Show)
-
-instance Semigroup ChainEdgeMap where
-    ChainEdgeMap l <> ChainEdgeMap r = ChainEdgeMap (IM.unionWith IntSet.union l r)
-
-instance Monoid ChainEdgeMap where
-    mempty  = ChainEdgeMap mempty
-    mappend = (<>)
-
 simpleEdgeMap :: Label -> ChainSet -> ChainEdgeMap
 simpleEdgeMap fromLbl toSet = ChainEdgeMap $ IM.singleton fromLbl toSet
 
@@ -154,8 +143,6 @@ data FrozenDynGraph = FrozenDynGraph
 emptyFrozenGraph :: FrozenDynGraph
 emptyFrozenGraph = FrozenDynGraph startBuildingGraph startBuildingGraph
 
-newtype DirtyChains = DirtyChains ChainSet deriving (Eq, Show, Monoid, Semigroup)
-
 -- a Network is a set of input nodes and a RunningDynGraph.  These structures
 -- are designed to use Weak references so they don't retain the internal graph
 -- structure or input nodes, and to be adjustable at runtime.
@@ -179,27 +166,6 @@ data PInput where
 type NetHeadMap = TVar (IntMap EInput)
 
 newtype BoundarySet = BoundarySet ChainSet deriving (Eq, Ord, Monoid, Semigroup)
-
-data FireOnce where
-    FireOnce :: Label -> a -> FireOnce
-
-instance Labelled FireOnce where
-    label f (FireOnce lbl a) = fmap (\l' -> FireOnce l' a  ) (f lbl)
-
-data DirtyLog = DirtyLog
-    { _dlChains :: !DirtyChains
-    , _dlEvents :: Endo [FireOnce]
-    , _dlRemSet :: !ChainEdgeMap
-    , _dlAddInp :: Endo [SGInput]
-    }
-
-instance Semigroup DirtyLog where
-    DirtyLog l1 l2 l3 l4 <> DirtyLog r1 r2 r3 r4 =
-     DirtyLog (l1<>r1) (l2<>r2) (l3<>r3) (l4<>r4)
-
-instance Monoid DirtyLog where
-    mempty = DirtyLog mempty mempty mempty mempty
-    mappend = (<>)
 
 -- The ModGraphM monad keeps track of a BuildingDynGraph during construction,
 -- with access to a FrozenDynGraph.

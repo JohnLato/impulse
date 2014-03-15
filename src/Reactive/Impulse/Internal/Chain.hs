@@ -444,6 +444,7 @@ compileChain (CDyn _ next) =
       actStep sgstate = do
           buildTopChains (sgstate^.outputs)
           scribe dlAddInp $ Endo ((sgstate^.inputs) ++)
+          scribe (dlChains . from dirtyChains) $ setOf (inputs.traverse.label) sgstate
 
 compileChain (CSwchE _ prevSetRef eventB cn) = 
     \_sink _ -> return [Mod actStep]

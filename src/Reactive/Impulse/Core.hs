@@ -1,6 +1,8 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE RankNTypes #-}
 
 {-# OPTIONS_GHC -Wall #-}
 module Reactive.Impulse.Core
@@ -14,12 +16,16 @@ import Control.Lens
 
 import Data.Semigroup
 import Data.IORef
+import Data.IntMap (IntMap)
+import qualified Data.IntMap as IM
+import qualified Data.IntSet as IntSet
 import Control.Concurrent.STM
 import qualified Data.Monoid as Monoid
 
 import System.IO.Unsafe (unsafePerformIO)
 
 import Debug.Trace
+import Unsafe.Coerce
 
 -----------------------------------------------------------
 -- evil label stuff
@@ -89,21 +95,61 @@ type SGen a = StateT SGState IO a
 
 data SGInput where
     SGInput :: TVar (a -> IO ()) -> Event a -> SGInput
+
 instance Show SGInput where
     show (SGInput _ e) = "SGInput (" ++ show (e^.label) ++ ")"
 
 data SGState = SGState
     { _inputs  :: [SGInput]
     , _outputs :: [Event (IO ())]
+    , _sgDirtyLog :: DirtyLog
     }
+
+type ChainSet = IntSet.IntSet
+
+newtype DirtyChains = DirtyChains ChainSet deriving (Eq, Show, Monoid, Semigroup)
+
+data FireOnce where
+    FireOnce :: Label -> a -> FireOnce
+
+instance Labelled FireOnce where
+    label f (FireOnce lbl a) = fmap (\l' -> FireOnce l' a  ) (f lbl)
+
+instance Labelled SGInput where
+    label f (SGInput a evt) = fmap (\evt' -> SGInput a evt' ) (label f evt)
+
+data DirtyLog = DirtyLog
+    { _dlChains :: !DirtyChains
+    , _dlEvents :: Endo [FireOnce]
+    , _dlRemSet :: !ChainEdgeMap
+    , _dlAddInp :: Endo [SGInput]
+    }
+
+instance Semigroup DirtyLog where
+    DirtyLog l1 l2 l3 l4 <> DirtyLog r1 r2 r3 r4 =
+     DirtyLog (l1<>r1) (l2<>r2) (l3<>r3) (l4<>r4)
+
+instance Monoid DirtyLog where
+    mempty = DirtyLog mempty mempty mempty mempty
+    mappend = (<>)
+
+newtype ChainEdgeMap = ChainEdgeMap (IntMap ChainSet) deriving (Show)
+
+instance Semigroup ChainEdgeMap where
+    ChainEdgeMap l <> ChainEdgeMap r = ChainEdgeMap (IM.unionWith IntSet.union l r)
+
+instance Monoid ChainEdgeMap where
+    mempty  = ChainEdgeMap mempty
+    mappend = (<>)
 
 $(makeLenses ''SGState)
 
 instance Semigroup SGState where
-    l <> r = l & inputs <>~ r^.inputs & outputs <>~ r^.outputs
+    SGState l1 l2 l3 <> SGState r1 r2 r3 =
+        SGState (l1<>r1) (l2<>r2) (l3<>r3)
 
 instance Monoid SGState where
-    mempty = SGState [] []
+    mempty = SGState [] [] mempty
     mappend = (<>)
 
 singleIn :: SGInput -> SGState

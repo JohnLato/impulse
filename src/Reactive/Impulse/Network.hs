@@ -37,7 +37,9 @@ compileNetwork net = do
     _nLock    <- newMVar ()
     runningGraph <- initialRunningDynGraph
     let network = Network _nInputs runningGraph _nPaused _nActions _nLock
-        builder = buildTopChains (sgstate^.outputs)
+        builder = do
+            buildTopChains (sgstate^.outputs)
+            tell (sgstate^.sgDirtyLog)
     atomically $ do
         initialActions <- dynUpdateGraph network builder
         writeTVar _nActions initialActions

@@ -22,9 +22,12 @@ module Reactive.Impulse.Syntax (
 ) where
 
 import Reactive.Impulse.Core
-import Reactive.Impulse.Internal.Types (FireOnce(..))
+import Reactive.Impulse.Internal.Types (dlEvents)
 
+import qualified Data.IntSet as IntSet
+import Data.Monoid
 import Control.Applicative
+import Control.Lens
 import Control.Monad.IO.Class
 
 import System.IO.Unsafe (unsafePerformIO)
@@ -66,6 +69,7 @@ onCreation :: a -> SGen (Event a)
 onCreation a = do
     lbl <- liftIO $ getLabel
     let evt = EIn lbl
-        dirty = FireOnce lbl a
+        dirty = Endo $ (FireOnce lbl a:)
+    sgDirtyLog.dlEvents <>= dirty
     error "TODO: onCreation: need to make sure the head exists, and need to add a dirty log to SGen"
     return evt
