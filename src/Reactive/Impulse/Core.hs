@@ -69,11 +69,11 @@ instance Labelled (Event a) where
     label f (EDyn lbl e)     = fmap (\l' -> (EDyn l' e)    ) (f lbl)
 
 instance Functor Event where
-    fmap f e = EMap (unsafePerformIO getLabel) f e
+    fmap f e = unsafePerformIO $ getLabel >>= \lbl -> return $ EMap lbl f e
 
 instance Monoid.Monoid (Event a) where
     mempty  = EIn (unsafePerformIO getLabel)
-    mappend = EUnion (unsafePerformIO getLabel)
+    mappend l r = unsafePerformIO $ getLabel >>= \lbl -> return $ EUnion lbl l r
 
 data Behavior a where
     BAcc   :: Label -> a -> Event (a->a) -> Behavior a
@@ -83,11 +83,11 @@ data Behavior a where
     BSwch  :: Label -> Behavior a -> Event (Behavior a) -> Behavior a
 
 instance Functor Behavior where
-    fmap f b = BMap (unsafePerformIO getLabel) f b
+    fmap f b = unsafePerformIO $ getLabel >>= \lbl -> return $ BMap lbl f b
 
 instance Applicative Behavior where
-    pure a  = BPure (unsafePerformIO getLabel) a
-    f <*> a = BApp (unsafePerformIO getLabel) f a
+    pure a  = unsafePerformIO $ getLabel >>= \lbl -> return $ BPure lbl a
+    f <*> a = unsafePerformIO $ getLabel >>= \lbl -> return $ BApp lbl f a
 
 -----------------------------------------------------------
 
