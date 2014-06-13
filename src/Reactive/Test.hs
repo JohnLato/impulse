@@ -9,6 +9,9 @@ import Data.Monoid
 
 import Control.Monad.IO.Class
 
+import qualified Data.IntMap as IM
+import Control.Monad
+
 net1 :: SGen (Int -> IO ())
 net1 = do
     (push,e1) <- newAddHandler
@@ -107,6 +110,33 @@ net7 = do
     let curFnB = stepper (const $ return ()) (fst <$> dynE (net2 <$ doSwitchE))
     reactimate $ applyB inpE curFnB
     return (push1,push2)
+
+net8 :: Int -> SGen (IM.IntMap (String -> IO ()))
+net8 netsize = do
+          (triggers, evs) <- unzip <$> replicateM netsize newAddHandler
+          liftIO $ print $ "inputs: " ++ show evs
+          let cc = mconcat evs
+          liftIO $ print $ "mconcat: " ++ show cc
+          let trigMap = IM.fromList $ zip [0..netsize-1] triggers
+              evFinal = print <$> cc
+          reactimate evFinal
+          liftIO $ print evFinal
+
+          {-
+           - this implementation is slower (20-30%) than doing unions and a single
+           - reactimate
+           -}
+          -- mapM_ (\ev -> reactimate $ print <$> ev) evs
+          return trigMap
+
+main = do
+    (trig,net) <- compileNetwork $ net8 2
+    startNetwork net
+    let [t0,t1] = IM.elems trig
+    t0 "1_1"
+    t0 "1_2"
+    t1 "2_1"
+    t1 "2_2"
 
 instance Show (Event a) where
     show (EIn l) = "EIn " ++ show l
