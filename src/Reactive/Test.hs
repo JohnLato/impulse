@@ -101,8 +101,6 @@ net6 = do
     reactimate $ putStrLn . ("pushed, got " ++) . show <$> activeE
     return (push1,push2,push3)
 
--- TODO: currently fails!
--- simple test of DynE
 net7 :: SGen (Int -> IO (), () -> IO ())
 net7 = do
     (push1,inpE) <- newAddHandler
