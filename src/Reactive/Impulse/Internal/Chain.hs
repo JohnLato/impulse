@@ -520,6 +520,7 @@ compileChain (CJoin _ prevSetRef cn) =
 
 compileNode :: (r ~ IO ()) => ChainNode (Chain r a) -> CompiledChain r a
 compileNode cn =
-    let nexts = map compileChain (cn^.cnChildren)
-    in foldl' (flip seq) () nexts `seq`
-        \sink a -> concat <$> mapM (\f -> f sink a) nexts
+    case map compileChain (cn^.cnChildren) of
+        [] -> \_ _ -> return []
+        [next] -> next
+        nexts  -> \sink a -> concat <$> mapM (\f -> f sink a) nexts
