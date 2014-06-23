@@ -118,6 +118,10 @@ data DynGraph f w = DynGraph
   , _dgBehaviors :: f (IntMap (w EBehavior))
   , _dgBoundMap  :: BoundaryMap
   , _dgMkWeaks   :: IntMap MkWeak
+
+  -- the following may only be available in a BuildingDynGraph
+  , _dgChainCache :: !ChainSet
+  , _dgChainHeads :: IntMap Label
   }
 
 -- a pure, immutable structure that is purely modifiable.  Useful for creating
@@ -125,7 +129,8 @@ data DynGraph f w = DynGraph
 type BuildingDynGraph = DynGraph Identity Identity
 
 startBuildingGraph :: Applicative t => DynGraph t a
-startBuildingGraph = DynGraph (pure IM.empty) (pure IM.empty) mempty mempty
+startBuildingGraph =
+    DynGraph (pure IM.empty) (pure IM.empty) mempty mempty mempty mempty
 
 -- a running graph, using weak references and mutable refs.
 type RunningDynGraph  = DynGraph TVar Weak

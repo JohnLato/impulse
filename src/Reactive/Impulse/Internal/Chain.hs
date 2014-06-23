@@ -135,10 +135,18 @@ makeCBSwitch = CBSwitch
 
 -- Add a new top-level chain to a DynGraph
 addHead :: EChain -> MkWeak -> BuildingDynGraph -> BuildingDynGraph
-addHead e mkw g = g
-  & (dgHeads.unwrapped)%~(IM.insert (e^.label) $ Identity e)
-  & dgMkWeaks%~(IM.insert (e^.label) mkw)
+addHead e@(EChain _ c) mkw g = g
+  & (dgHeads.unwrapped)%~(IM.insert lbl $ Identity e)
+  & dgMkWeaks%~(IM.insert lbl mkw)
+  & dgChainCache<>~pushSet'
+  & dgChainHeads<>~IM.fromSet (const lbl) pushSet'
+ where
+  lbl = e^.label
+  pushSet' = maybe (IntSet.singleton lbl) (IntSet.insert lbl) (c^.cPushSet)
 
+-- removeHead only removed the head reference for a chain, it does
+-- not remove it from the ChainCache (set of all referenced chains)
+-- nor does it remove targets from ChainHeads (map of chain -> head)
 removeHead :: Label -> BuildingDynGraph -> BuildingDynGraph
 removeHead lbl g
   | getAny permHeads = g
@@ -152,18 +160,26 @@ removeHead lbl g
 
 -- Add a chain under the given label.
 addChainTo :: EChain -> Label -> BuildingDynGraph -> BuildingDynGraph
-addChainTo eChain parentLbl dg =
-      over (dgHeads.unwrapped) (IM.map $ over unwrapped f') dg
+addChainTo eChain@(EChain _ c) parentLbl dg = dg
+      & over (dgHeads.unwrapped) (IM.adjust (over unwrapped f') parentHead)
+      & dgChainCache<>~ pushSet'
+      & dgChainHeads<>~ IM.fromSet (const parentHead) pushSet'
     where
       f' (EChain p ec) = EChain p $ insertAt parentLbl eChain ec
+      childLbl = eChain^.label
+      parentHead = maybe (error "impulse: addChainTo: parent not found!")
+                         id $ dg^.dgChainHeads.to (IM.lookup parentLbl)
+      pushSet' = maybe (IntSet.singleton childLbl)
+                  (IntSet.insert childLbl) (c^.cPushSet)
 
 chainExists :: Label -> BuildingDynGraph -> Bool
-chainExists needle = anyOf (dgHeads.unwrapped.traverse.unwrapped)
-    (\(EChain _ c) -> containsChain c needle)
+chainExists needle dg = dg ^. dgChainCache . to (IntSet.member needle)
 
 getChain :: Label -> BuildingDynGraph -> Maybe EChain
-getChain needle dg = getFirst $
-    dg ^. dgHeads.unwrapped.folded.unwrapped.to stepper'
+getChain needle dg =
+    getFirst $ foldMapOf (dgChainHeads.to (IM.lookup needle)._Just
+                         .to (\lbl -> dg^.dgHeads.unwrapped.to (IM.lookup lbl))
+                         ._Just.unwrapped) stepper' dg
   where
     stepper' :: EChain -> First EChain
     stepper' (EChain p c) = stepper p c
@@ -176,13 +192,13 @@ getChain needle dg = getFirst $
     stepChain :: PermHead -> Chain (IO ()) x -> First EChain
     stepChain p c | c^.label == needle = First . Just $ EChain p c
     stepChain p c@(CEvent _ n)
-        | containsChain c needle = n^.cnChildren.folded.to (stepper p)
+        | containsChain c needle = foldMapOf (cnChildren.folded) (stepper p) n
     stepChain p c@(CMap _ _ n)
-        | containsChain c needle = n^.cnChildren.folded.to (stepper p)
+        | containsChain c needle = foldMapOf (cnChildren.folded) (stepper p) n
     stepChain p c@(CApply _ _ n)
-        | containsChain c needle = n^.cnChildren.folded.to (stepper p)
+        | containsChain c needle = foldMapOf (cnChildren.folded) (stepper p) n
     stepChain p c@(CSwchE _ _ _ n)
-        | containsChain c needle = n^.cnChildren.folded.to (stepper p)
+        | containsChain c needle = foldMapOf (cnChildren.folded) (stepper p) n
     stepChain _ _ = mempty
 
 -----------------------------------------------------------
