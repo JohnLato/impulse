@@ -14,8 +14,6 @@ module Reactive.Impulse.Internal.Chain (
   buildTopChains
 , compileChain
 , insertAt
-, getChain
-, containsChain
 , removeEdges
 ) where
 
