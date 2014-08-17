@@ -20,7 +20,7 @@ import Reactive.Impulse.Internal.Chain
 import Reactive.Impulse.Internal.Weak
 
 import Control.Applicative
-import Control.Concurrent.STM
+import Control.Concurrent.STM hiding (mkWeakTVar)
 import Control.Concurrent.MVar (withMVar)
 import Control.Lens
 import Control.Monad.Identity
@@ -140,11 +140,11 @@ dynUpdateGraph net builder = do
           | IntSet.member (fo^.label) acc = return acc
           | otherwise = IntSet.insert (fo^.label) acc <$ runFireOnce net fo
 
-    mTrace $ "final graph chains:\n" ++ unlines (finalGraph^.dgHeads.unwrapped.traverse.unwrapped.to (\(EChain _ x) -> [showChainTree x]))
+    mTrace $ "final graph chains:\n" ++ unlines (finalGraph^.dgHeads._Wrapped.traverse._Wrapped.to (\(EChain _ x) -> [showChainTree x]))
     mTrace "*** end ***"
     mapMOf_ (from dirtyChains.members)
-        (\lbl -> finalGraph ^! dgHeads.unwrapped.to (IM.lookup lbl)._Just
-              .unwrapped.act (recompile lbl))
+        (\lbl -> finalGraph ^! dgHeads._Wrapped.to (IM.lookup lbl)._Just
+              ._Wrapped.act (recompile lbl))
         dirties
 
     let curChains = atomically $ net^!nDynGraph.dgHeads.act readTVar.traverse.act (unsafeIOToSTM.deRefWeak)._Just.to (\(EChain _ x) -> [showChainTree x])
@@ -174,11 +174,11 @@ replacingRunningGraph g m = do
 
         let noMaybes = IM.mapMaybe (fmap Identity)
             sourcegraph = startBuildingGraph
-                            & dgHeads.unwrapped .~ heads'w
-                            & dgBehaviors.unwrapped .~ behs'w
+                            & dgHeads._Wrapped .~ heads'w
+                            & dgBehaviors._Wrapped .~ behs'w
             mutgraph = startBuildingGraph
-                        & dgHeads.unwrapped .~ noMaybes heads'm
-                        & dgBehaviors.unwrapped .~ noMaybes behs'm
+                        & dgHeads._Wrapped .~ noMaybes heads'm
+                        & dgBehaviors._Wrapped .~ noMaybes behs'm
         return $ emptyFrozenGraph & frozenMutGraph .~ mutgraph
                   & frozenSource .~ sourcegraph
 
@@ -205,7 +205,7 @@ replacingRunningGraph g m = do
                                 mkw
             folder map' dirtyLbl = do
                     h' <- traverse (mkAWeakRef.runIdentity)
-                             $ newg^.dgHeads.unwrapped.to (IM.lookup dirtyLbl)
+                             $ newg^.dgHeads._Wrapped.to (IM.lookup dirtyLbl)
                     return $! maybe id (IM.insert dirtyLbl) h' map'
             mkWeakHeads = do
               mg1 <- foldlMOf (from dirtyChains.members) folder mempty dirties
@@ -221,7 +221,7 @@ replacingRunningGraph g m = do
             reconstituter :: (forall f w. Lens' (DynGraph f w) (f (IntMap (w t)))) -> (t -> IO (Weak t)) -> IO ()
             reconstituter fieldLens weakor = do
                 mb1 <- traverse (weakor.runIdentity)
-                        $ newg^.fieldLens.unwrapped
+                        $ newg^.fieldLens._Wrapped
                 atomically $ g^!fieldLens.act (flip modifyTVar' (IM.union mb1))
         return $ mkWeakHeads >> mkWeakBs
 
@@ -232,7 +232,7 @@ replacingRunningGraph g m = do
 prepareForMerge :: ChainEdgeMap -> ModGraphM ()
 prepareForMerge cem = do
     -- the initial, frozen graph.
-    baseg <- view $ frozenMutGraph.dgHeads.unwrapped
+    baseg <- view $ frozenMutGraph.dgHeads._Wrapped
     -- we need to prune the pre-existing graph.  The new chains should
     -- already be pruned though, so we can leave them be.
     let remSet = cem^.from chainEdgeMap.to (IM.keysSet)
@@ -241,14 +241,14 @@ prepareForMerge cem = do
             else (mempty, e)
     let doAcc :: DirtyChains -> EChain -> (DirtyChains,EChain)
         doAcc !s e = pruneEChain e & _1 <>~ s
-        (rmDirties, baseg') = mapAccumLOf (traverse.unwrapped) doAcc mempty baseg
+        (rmDirties, baseg') = mapAccumLOf (traverse._Wrapped) doAcc mempty baseg
     scribe dlChains rmDirties
     -- the built sub-graph to add
     newg  <- get
-    newg' <- foldlMOf (dgHeads.unwrapped.traverse.unwrapped)
+    newg' <- foldlMOf (dgHeads._Wrapped.traverse._Wrapped)
                 (procNewHead $ newg^.dgBoundMap ) baseg' newg
 
-    dgHeads.unwrapped.=newg'
+    dgHeads._Wrapped.=newg'
   where
     procNewHead :: BoundaryMap -> IntMap (Identity EChain) -> EChain
                 -> ModGraphM (IntMap (Identity EChain))
@@ -264,11 +264,11 @@ prepareForMerge cem = do
         if IntSet.null parentSet
               then IM.insert lbl (Identity newHead) runningGraph
                    <$ markDirty lbl
-              else IM.map (over unwrapped f') runningGraph
+              else IM.map (over _Wrapped f') runningGraph
                    <$ markDirties parentSet
 
 boundSet :: BuildingDynGraph -> BoundarySet
-boundSet g = g^.dgHeads.unwrapped.traverse.unwrapped.cBoundarySet
+boundSet g = g^.dgHeads._Wrapped.traverse._Wrapped.cBoundarySet
 
 -- TODO: got a recursive lock problem.  Need to fix it.
 -- The input TVar needs to include a lock context.  Any actions run from

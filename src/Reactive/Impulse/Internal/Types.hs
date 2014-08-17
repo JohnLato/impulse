@@ -1,6 +1,7 @@
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE NoMonomorphismRestriction #-}
 {-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE TemplateHaskell #-}
 
@@ -213,8 +214,8 @@ useUpdateStep f g h u = case u of
 emptyCompiledChain :: CompiledChain r a
 emptyCompiledChain _ _ = return []
 
-$(makeIso ''ChainEdgeMap)
-$(makeIso ''DirtyChains)
+$(makePrisms ''ChainEdgeMap)
+$(makePrisms ''DirtyChains)
 $(makePrisms ''CBehavior)
 $(makePrisms ''UpdateStep)
 $(makeLenses ''PrevSwchRef)
@@ -224,6 +225,9 @@ $(makeLenses ''FrozenDynGraph)
 $(makeLenses ''DynGraph)
 
 $(makeLenses ''DirtyLog)
+
+dirtyChains = from _DirtyChains
+chainEdgeMap = from _ChainEdgeMap
 
 markDirty :: Label -> ModGraphM ()
 markDirty l = scribe dlChains $ DirtyChains $ IntSet.singleton l
@@ -270,7 +274,9 @@ cPushSet = to f
     f (CJoin _ _ n)    = Just $ n^.cnPushSet
     f _                = Nothing
 
-$(makeIso ''BoundaryMap)
+$(makePrisms ''BoundaryMap)
+
+boundaryMap = from _BoundaryMap
 
 instance Semigroup BoundaryMap where
     l <> r = under boundaryMap (IM.unionWith (<>) (r^.from boundaryMap)) l
@@ -279,7 +285,9 @@ instance Monoid BoundaryMap where
     mappend = (<>)
     mempty  = BoundaryMap mempty
 
-$(makeIso ''BoundarySet)
+$(makePrisms ''BoundarySet)
+
+boundarySet = from _BoundarySet
 
 cBoundarySet :: IndexPreservingGetter EChain BoundarySet
 cBoundarySet = to f.boundarySet

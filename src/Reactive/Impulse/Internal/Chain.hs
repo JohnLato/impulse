@@ -136,7 +136,7 @@ makeCBSwitch = CBSwitch
 -- Add a new top-level chain to a DynGraph
 addHead :: EChain -> MkWeak -> BuildingDynGraph -> BuildingDynGraph
 addHead e@(EChain _ c) mkw g = g
-  & (dgHeads.unwrapped)%~(IM.insert lbl $ Identity e)
+  & (dgHeads._Wrapped)%~(IM.insert lbl $ Identity e)
   & dgMkWeaks%~(IM.insert lbl mkw)
   & dgChainCache<>~pushSet'
   & dgChainHeads<>~IM.fromSet (const lbl) pushSet'
@@ -151,17 +151,17 @@ removeHead :: Label -> BuildingDynGraph -> BuildingDynGraph
 removeHead lbl g
   | getAny permHeads = g
   | otherwise = g
-      & (dgHeads.unwrapped)%~(IM.delete lbl)
+      & (dgHeads._Wrapped)%~(IM.delete lbl)
       & dgMkWeaks%~(IM.delete lbl)
  where
   permHeads =
-      g^.dgHeads.unwrapped.to (IM.lookup lbl)
-      . _Just.unwrapped.permHead.wrapping Any
+      g^.dgHeads._Wrapped.to (IM.lookup lbl)
+      . _Just._Wrapped.permHead._Unwrapping Any
 
 -- Add a chain under the given label.
 addChainTo :: EChain -> Label -> BuildingDynGraph -> BuildingDynGraph
 addChainTo eChain@(EChain _ c) parentLbl dg = dg
-      & over (dgHeads.unwrapped) (IM.adjust (over unwrapped f') parentHead)
+      & over (dgHeads._Wrapped) (IM.adjust (over _Wrapped f') parentHead)
       & dgChainCache<>~ pushSet'
       & dgChainHeads<>~ IM.fromSet (const parentHead) pushSet'
     where
@@ -178,8 +178,8 @@ chainExists needle dg = dg ^. dgChainCache . to (IntSet.member needle)
 getChain :: Label -> BuildingDynGraph -> Maybe EChain
 getChain needle dg =
     getFirst $ foldMapOf (dgChainHeads.to (IM.lookup needle)._Just
-                         .to (\lbl -> dg^.dgHeads.unwrapped.to (IM.lookup lbl))
-                         ._Just.unwrapped) stepper' dg
+                         .to (\lbl -> dg^.dgHeads._Wrapped.to (IM.lookup lbl))
+                         ._Just._Wrapped) stepper' dg
   where
     stepper' :: EChain -> First EChain
     stepper' (EChain p c) = stepper p c
@@ -204,11 +204,11 @@ getChain needle dg =
 -----------------------------------------------------------
 
 addBehavior :: EBehavior -> ChainM ()
-addBehavior e = dgBehaviors.unwrapped %= IM.insert (e^.label) (Identity e)
+addBehavior e = dgBehaviors._Wrapped %= IM.insert (e^.label) (Identity e)
 
 lookupBehavior :: Label -> ChainM (Maybe EBehavior)
 lookupBehavior lbl = (fmap.fmap) runIdentity
-    $ use (dgBehaviors.unwrapped.to (IM.lookup lbl))
+    $ use (dgBehaviors._Wrapped.to (IM.lookup lbl))
 
 -----------------------------------------------------
 -- dynamic stuff
@@ -224,7 +224,7 @@ onChangedB (BSwch _ _ e)  = () <$ e
 
 -----------------------------------------------------
 
-buildTopChains :: [ Event (IO ()) ] => ChainM ()
+buildTopChains :: [ Event (IO ()) ] -> ChainM ()
 buildTopChains = buildChains
 
 -- build all chains for a given set of output Events.
@@ -234,6 +234,7 @@ buildChains = mapM_ addChain'
     guardBound lbl chainAction = do
         boundary <- view (from boundarySet)
         when (not $ IntSet.member lbl boundary) chainAction
+    addChain' :: Event (IO ()) -> ChainM ()
     addChain' evt@(EOut lbl prev) = guardBound lbl $ do
             let chn = COut lbl :: Chain (IO ()) (IO ())
                 mkw = MkWeak $ mkWeak evt
@@ -482,7 +483,7 @@ compileChain (CSwchE _ prevSetRef eventB cn) =
               return (newE, pVals)
           let prevSet = pVals^.psrEdgeMap
           pVals^.psrMkWeaks
-          dgHeads.unwrapped.traverse.unwrapped %= \(EChain p c) ->
+          dgHeads._Wrapped.traverse._Wrapped %= \(EChain p c) ->
               EChain p $ removeEdges prevSet c
           tell $ mempty
                   & dlChains .~ (prevSet^.from chainEdgeMap.to IM.keysSet.dirtyChains)
@@ -498,7 +499,7 @@ compileChain (CSwchE _ prevSetRef eventB cn) =
           let missingChains = cn^.cnChildren.folded.to
                   (\c -> let l = c^.label
                          in if chainExists l g then mempty else IM.singleton l c)
-          dgHeads.unwrapped %= \im ->
+          dgHeads._Wrapped %= \im ->
             foldrOf (folded.to (EChain False)) tmpHead im missingChains
           pushSet^!members.act (flip addChain newE)
 
@@ -518,7 +519,7 @@ compileChain (CJoin _ prevSetRef cn) =
               return (newE, pVals)
           let prevSet = pVals^.psrEdgeMap
           pVals^.psrMkWeaks
-          dgHeads.unwrapped.traverse.unwrapped %= \(EChain p c) ->
+          dgHeads._Wrapped.traverse._Wrapped %= \(EChain p c) ->
               EChain p $ removeEdges prevSet c
           tell $ mempty
                   & dlChains .~ (prevSet^.from chainEdgeMap.to IM.keysSet.dirtyChains)
@@ -528,7 +529,7 @@ compileChain (CJoin _ prevSetRef cn) =
           let missingChains = cn^.cnChildren.folded.to
                   (\c -> let l = c^.label
                          in if chainExists l g then mempty else IM.singleton l c)
-          dgHeads.unwrapped %= \im ->
+          dgHeads._Wrapped %= \im ->
             foldrOf (folded.to (EChain False)) tmpHead im missingChains
           pushSet^!members.act (flip addChain newE)
 
