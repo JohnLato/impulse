@@ -118,8 +118,8 @@ instance Show SGInput where
     show (SGInput _ e) = "SGInput (" ++ show (e^.label) ++ ")"
 
 data SGState = SGState
-    { _inputs  :: [SGInput]
-    , _outputs :: [Event (IO ())]
+    { _inputs  :: ![SGInput]
+    , _outputs :: ![Event (IO ())]
     , _sgDirtyLog :: DirtyLog
     }
 

@@ -53,33 +53,33 @@ addToHeadMap :: NetHeadMap -> [SGInput] -> IO ()
 addToHeadMap mapvar sgInputs = do
     currentHeads <- readTVarIO mapvar
     mTrace $ "curHeads" ++ show (IM.keys currentHeads)
-    traverse mkDynInput sgInputs >>=
-        atomically . writeTVar mapvar . IM.union currentHeads . IM.fromList
+    (foldM folder currentHeads sgInputs) >>= atomically . writeTVar mapvar
     currentHeads2 <- readTVarIO mapvar
     mTrace $ "curHeads(added)" ++ show (IM.keys currentHeads2)
   where
+    folder acc i   = (\(l,e) -> IM.insert l e acc) <$> mkDynInput i
+    mkDynInput :: SGInput -> IO (Label, EInput)
+    mkDynInput (SGInput t e) =
+        let !l = e^.label
+            finishIt = Just . atomically $
+                modifyTVar' mapvar (IM.delete l)
+        in (l,) . EInput <$> mkWeakTVar t finishIt
+
+addToHeadMap' :: NetHeadMap -> [SGInput] -> STM ()
+addToHeadMap' mapvar sgInputs = do
+    currentHeads <- readTVar mapvar
+    mTrace $ "curHeads" ++ show (IM.keys currentHeads)
+    unsafeIOToSTM (foldM folder currentHeads sgInputs) >>= writeTVar mapvar
+    currentHeads2 <- readTVar mapvar
+    mTrace $ "curHeads(added)" ++ show (IM.keys currentHeads2)
+  where
+    folder acc i   = (\(l,e) -> IM.insert l e acc) <$> mkDynInput i
     mkDynInput :: SGInput -> IO (Label, EInput)
     mkDynInput (SGInput t e) =
         let !l = e^.label
             finishIt = Just . atomically $
                 modifyTVar' mapvar (IM.delete l)
         in (l,) . EInput <$> mkWeakTVar t finishIt 
-
-addToHeadMap' :: NetHeadMap -> [SGInput] -> STM ()
-addToHeadMap' mapvar sgInputs = do
-    currentHeads <- readTVar mapvar
-    mTrace $ "curHeads" ++ show (IM.keys currentHeads)
-    traverse mkDynInput sgInputs >>=
-        writeTVar mapvar . IM.union currentHeads . IM.fromList
-    currentHeads2 <- readTVar mapvar
-    mTrace $ "curHeads(added)" ++ show (IM.keys currentHeads2)
-  where
-    mkDynInput :: SGInput -> STM (Label, EInput)
-    mkDynInput (SGInput t e) =
-        let !l = e^.label
-            finishIt = Just . atomically $
-                modifyTVar' mapvar (IM.delete l)
-        in unsafeIOToSTM $ (l,) . EInput <$> mkWeakTVar t finishIt 
 
 
 runFireOnce :: Network -> FireOnce -> IO ()

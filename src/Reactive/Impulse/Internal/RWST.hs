@@ -86,7 +86,9 @@ instance (Functor m, MonadPlus m) => Alternative (RWST r w s m) where
     (<|>) = mplus
 
 instance (Monad m) => Monad (RWST r w s m) where
+    {-# INLINE return #-}
     return a = RWST $ \w _ s -> return (a, s, w)
+    {-# INLINE (>>=) #-}
     m >>= k  = RWST $ \w0 r s -> do
         (a, s', w)  <- runRWST' m w0 r s
         (b, s'',w') <- runRWST' (k a) w r s'

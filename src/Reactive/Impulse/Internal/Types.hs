@@ -117,8 +117,8 @@ newtype BoundaryMap = BoundaryMap (IntMap ChainSet)
 data DynGraph f w = DynGraph
   { _dgHeads     :: f (IntMap (w EChain))
   , _dgBehaviors :: f (IntMap (w EBehavior))
-  , _dgBoundMap  :: BoundaryMap
-  , _dgMkWeaks   :: IntMap MkWeak
+  , _dgBoundMap  :: !BoundaryMap
+  , _dgMkWeaks   :: !(IntMap MkWeak)
 
   -- the following may only be available in a BuildingDynGraph
   , _dgChainCache :: !ChainSet

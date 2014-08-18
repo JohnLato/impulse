@@ -504,7 +504,7 @@ compileChain (CSwchE _ prevSetRef eventB cn) =
           pushSet^!members.act (flip addChain newE)
 
 compileChain (CJoin _ prevSetRef cn) =
-    \sink newE -> return [Mod $ actStep newE]
+    \_sink newE -> return [Mod $ actStep newE]
     where
       tmpHead e = IM.insertWith (const id) (e^.label) $ Identity e
       actStep newE = do
