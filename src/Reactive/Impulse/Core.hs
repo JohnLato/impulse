@@ -74,6 +74,7 @@ instance Functor Event where
 instance Monoid.Monoid (Event a) where
     mempty  = EIn (unsafePerformIO getLabel)
     mappend l r = unsafePerformIO $ getLabel >>= \lbl -> return $ EUnion lbl l r
+    mconcat = binConcat
 
 data Behavior a where
     BAcc   :: Label -> a -> Event (a->a) -> Behavior a
@@ -88,6 +89,23 @@ instance Functor Behavior where
 instance Applicative Behavior where
     pure a  = unsafePerformIO $ getLabel >>= \lbl -> return $ BPure lbl a
     f <*> a = unsafePerformIO $ getLabel >>= \lbl -> return $ BApp lbl f a
+
+-----------------------------------------------------------
+
+binConcat :: Monoid a => [a] -> a
+binConcat []  = mempty
+binConcat xs0 = go xs0  -- non-Empty
+  where
+    go xs = case pairUp xs of
+      [x] -> x
+      xs' -> go xs'
+
+pairUp :: Monoid a => [a] -> [a]
+pairUp = go
+  where
+    go (x:y:zs) = let !z' = (x `mappend` y)
+                  in z' : go zs
+    go xs = xs
 
 -----------------------------------------------------------
 
