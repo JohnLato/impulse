@@ -155,13 +155,9 @@ emptyFrozenGraph = FrozenDynGraph startBuildingGraph startBuildingGraph
 data Network = Network
     { _nInputs   :: NetHeadMap
     , _nDynGraph :: RunningDynGraph
-    , _nPaused   :: TVar (Maybe NetworkPausing)
     , _nActions  :: TVar (IO ())                -- actions to be run on init.
     , _nLock     :: MVar ()
     }
-
-data NetworkPausing = NetworkPausing
-    { _npPausedInputs :: IntMap PInput }
 
 data EInput where
     EInput :: Weak (TVar (a -> IO ())) -> EInput
@@ -220,7 +216,6 @@ $(makePrisms ''CBehavior)
 $(makePrisms ''UpdateStep)
 $(makeLenses ''PrevSwchRef)
 $(makeLenses ''Network)
-$(makeLenses ''NetworkPausing)
 $(makeLenses ''FrozenDynGraph)
 $(makeLenses ''DynGraph)
 

@@ -47,7 +47,6 @@ instance Monad Signal where
 signalNetwork :: Signal (IO ()) -> IO Network
 signalNetwork s = do
     ((),net) <- compileNetwork finalSGen
-    startNetwork net
     return net
   where
     finalSGen = compileSignal s >>= \case

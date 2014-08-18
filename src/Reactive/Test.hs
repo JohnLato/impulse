@@ -129,7 +129,6 @@ net8 netsize = do
 
 main = do
     (trig,net) <- compileNetwork $ net8 2
-    startNetwork net
     let [t0,t1] = IM.elems trig
     t0 "1_1"
     t0 "1_2"
