@@ -46,18 +46,18 @@ initialRunningDynGraph = do
 compileHeadMap :: SGState -> IO NetHeadMap
 compileHeadMap sg = do
     mapvar <- newTVarIO IM.empty
-    addToHeadMap mapvar $ sg^.inputs
+    addToHeadMap mapvar $ sg^.inputs.to IM.elems
     return mapvar
 
 addToHeadMap :: NetHeadMap -> [SGInput] -> IO ()
 addToHeadMap mapvar sgInputs = do
     currentHeads <- readTVarIO mapvar
     mTrace $ "curHeads" ++ show (IM.keys currentHeads)
-    (foldM folder currentHeads sgInputs) >>= atomically . writeTVar mapvar
-    currentHeads2 <- readTVarIO mapvar
+    currentHeads2 <- foldM folder currentHeads sgInputs
+    atomically $ writeTVar mapvar currentHeads2
     mTrace $ "curHeads(added)" ++ show (IM.keys currentHeads2)
   where
-    folder acc i   = (\(l,e) -> IM.insert l e acc) <$> mkDynInput i
+    folder !acc i   = (\(l,e) -> IM.insert l e acc) <$> mkDynInput i
     mkDynInput :: SGInput -> IO (Label, EInput)
     mkDynInput (SGInput t e) =
         let !l = e^.label
@@ -73,14 +73,13 @@ addToHeadMap' mapvar sgInputs = do
     currentHeads2 <- readTVar mapvar
     mTrace $ "curHeads(added)" ++ show (IM.keys currentHeads2)
   where
-    folder acc i   = (\(l,e) -> IM.insert l e acc) <$> mkDynInput i
+    folder !acc i   = (\(l,e) -> IM.insert l e acc) <$> mkDynInput i
     mkDynInput :: SGInput -> IO (Label, EInput)
     mkDynInput (SGInput t e) =
         let !l = e^.label
             finishIt = Just . atomically $
                 modifyTVar' mapvar (IM.delete l)
         in (l,) . EInput <$> mkWeakTVar t finishIt 
-
 
 runFireOnce :: Network -> FireOnce -> IO ()
 runFireOnce net (FireOnce l a) = do
@@ -200,7 +199,7 @@ replacingRunningGraph g m = do
                        let !lbl = t^.label
                            mkw = newg^.dgMkWeaks.to (IM.lookup lbl)
                            evictor = Just $ evictHead g lbl
-                       in maybe (error $ "impulse <replacingRunningGraph>: warning: missing MkWeak for " ++ show lbl)
+                       in maybe (error $ "impulse <replacingRunningGraph>: missing MkWeak for " ++ show lbl)
                                 (\w -> unMkWeak w t evictor)
                                 mkw
             folder map' dirtyLbl = do

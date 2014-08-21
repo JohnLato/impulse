@@ -142,7 +142,7 @@ addHead e@(EChain _ c) mkw g = g
   & dgChainHeads<>~IM.fromSet (const lbl) pushSet'
  where
   lbl = e^.label
-  pushSet' = maybe (IntSet.singleton lbl) (IntSet.insert lbl) (c^.cPushSet)
+  !pushSet' = maybe (IntSet.singleton lbl) (IntSet.insert lbl) (c^.cPushSet)
 
 -- removeHead only removed the head reference for a chain, it does
 -- not remove it from the ChainCache (set of all referenced chains)
@@ -458,8 +458,8 @@ compileChain (CDyn _ next) =
       !next'  = compileNode next
       actStep sgstate = do
           buildTopChains (sgstate^.outputs)
-          scribe dlAddInp $ Endo ((sgstate^.inputs) ++)
-          scribe (dlChains . from dirtyChains) $ setOf (inputs.traverse.label) sgstate
+          scribe dlAddInp $ Endo ((sgstate^.inputs.to IM.elems) <>)
+          scribe (dlChains . from dirtyChains) $ sgstate^.inputs.to IM.keysSet
 
 compileChain (CSwchE _ prevSetRef eventB cn) = 
     \_sink _ -> return [Mod actStep]

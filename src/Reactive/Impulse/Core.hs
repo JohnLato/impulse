@@ -118,7 +118,7 @@ instance Show SGInput where
     show (SGInput _ e) = "SGInput (" ++ show (e^.label) ++ ")"
 
 data SGState = SGState
-    { _inputs  :: ![SGInput]
+    { _inputs  :: !(IM.IntMap SGInput)
     , _outputs :: ![Event (IO ())]
     , _sgDirtyLog :: DirtyLog
     }
@@ -167,7 +167,7 @@ instance Semigroup SGState where
         SGState (l1<>r1) (l2<>r2) (l3<>r3)
 
 instance Monoid SGState where
-    mempty = SGState [] [] mempty
+    mempty = SGState mempty [] mempty
     mappend = (<>)
 
 reactimate :: Event (IO ()) -> SGen ()
@@ -176,7 +176,7 @@ reactimate e = do
     outputs %= (EOut lbl e:)
 
 addInput :: SGInput -> SGen ()
-addInput sgi = inputs %= (sgi:)
+addInput sgi = inputs %= (IM.insert (sgi^.label) sgi)
 
 newAddHandler :: SGen ((a -> IO ()), Event a)
 newAddHandler = do
