@@ -120,7 +120,7 @@ data DynGraph f w = DynGraph
   , _dgMkWeaks   :: !(IntMap MkWeak)
 
   -- the following may only be available in a BuildingDynGraph
-  , _dgChainCache :: !ChainSet
+  -- a map from each label to its most recently known parent.
   , _dgChainHeads :: IntMap Label
   }
 
@@ -130,7 +130,7 @@ type BuildingDynGraph = DynGraph Identity Identity
 
 startBuildingGraph :: Applicative t => DynGraph t a
 startBuildingGraph =
-    DynGraph (pure IM.empty) (pure IM.empty) mempty mempty mempty mempty
+    DynGraph (pure IM.empty) (pure IM.empty) mempty mempty mempty
 
 -- a running graph, using weak references and mutable refs.
 type RunningDynGraph  = DynGraph TVar Weak

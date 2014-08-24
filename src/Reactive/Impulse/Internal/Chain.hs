@@ -137,8 +137,7 @@ addHead :: EChain -> MkWeak -> BuildingDynGraph -> BuildingDynGraph
 addHead e@(EChain _ c) mkw g = g
   & (dgHeads._Wrapped)%~(IM.insert lbl $ Identity e)
   & dgMkWeaks%~(IM.insert lbl mkw)
-  & dgChainCache<>~pushSet'
-  & dgChainHeads<>~IM.fromSet (const lbl) pushSet'
+  & dgChainHeads%~(IM.fromSet (const lbl) pushSet' <>)
  where
   lbl = e^.label
   !pushSet' = maybe (IntSet.singleton lbl) (IntSet.insert lbl) (c^.cPushSet)
@@ -161,8 +160,7 @@ removeHead lbl g
 addChainTo :: EChain -> Label -> BuildingDynGraph -> BuildingDynGraph
 addChainTo eChain@(EChain _ c) parentLbl dg = dg
       & over (dgHeads._Wrapped) (IM.adjust (over _Wrapped f') parentHead)
-      & dgChainCache<>~ pushSet'
-      & dgChainHeads<>~ IM.fromSet (const parentHead) pushSet'
+      & dgChainHeads %~ (IM.fromSet (const parentHead) pushSet' <>)
     where
       f' (EChain p ec) = EChain p $ insertAt parentLbl eChain ec
       childLbl = eChain^.label
@@ -172,13 +170,27 @@ addChainTo eChain@(EChain _ c) parentLbl dg = dg
                   (IntSet.insert childLbl) (c^.cPushSet)
 
 chainExists :: Label -> BuildingDynGraph -> Bool
-chainExists needle dg = dg ^. dgChainCache . to (IntSet.member needle)
+chainExists needle dg = dg ^. dgChainHeads . to (IM.member needle)
 
-getChain :: Label -> BuildingDynGraph -> Maybe EChain
-getChain needle dg =
-    getFirst $ foldMapOf (dgChainHeads.to (IM.lookup needle)._Just
-                         .to (\lbl -> dg^.dgHeads._Wrapped.to (IM.lookup lbl))
-                         ._Just._Wrapped) stepper' dg
+-- finds a chain for the given label, and also updates the dgChainHeads
+-- map to point to the latest known head
+getChain :: Label -> ChainM EChain
+getChain needle = do
+    dg <- get
+    let loop headmap finalHead lbl =
+          let (Just next,map') = IM.updateLookupWithKey f lbl headmap
+              f _ _ = Just finalHead
+              rhead = next == lbl
+          in if rhead then (next,map') else loop map' finalHead next
+        (realHead,chainmap') = loop (dg^.dgChainHeads) realHead needle
+    dgChainHeads .= chainmap'
+    let m'chain = getFirst $ foldMapOf
+            (dgHeads._Wrapped.to (IM.lookup realHead)._Just._Wrapped)
+            stepper' dg
+    case m'chain of
+        Just chain -> return chain
+        _ -> error $ "impulse: internal error, no head for " ++ show needle
+
   where
     stepper' :: EChain -> First EChain
     stepper' (EChain p c) = stepper p c
@@ -321,8 +333,9 @@ addChains
     -> ChainM Bool  -- True if the chain was added
 addChains p childLbl lbl evt constr = do
     dg <- get
-    let Just childChain = getChain childLbl dg
-        eChain = EChain p (constr $ eSingleton childChain)
+    mTrace $ show ("addCHains,heads",dg^.dgChainHeads,childLbl,lbl)
+    childChain <- getChain childLbl
+    let eChain = EChain p (constr $ eSingleton childChain)
         mkw = MkWeak $ mkWeak evt
     if chainExists lbl dg
         then mTrace ("adding " ++ show childLbl ++ " to " ++ show lbl)

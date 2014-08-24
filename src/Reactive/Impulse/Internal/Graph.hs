@@ -40,7 +40,7 @@ initialRunningDynGraph :: IO RunningDynGraph
 initialRunningDynGraph = do
     tv1 <- newTVarIO mempty
     tv2 <- newTVarIO mempty
-    return $ DynGraph tv1 tv2 mempty IM.empty mempty mempty
+    return $ DynGraph tv1 tv2 mempty IM.empty mempty
 
 compileHeadMap :: SGState -> IO NetHeadMap
 compileHeadMap sg = do
