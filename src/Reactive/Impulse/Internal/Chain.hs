@@ -28,7 +28,6 @@ import Control.Monad.Identity
 import Control.Monad.State (runStateT)
 import Control.Monad.RWS
 
-import Data.Foldable (foldl')
 import qualified Data.IntMap as IM
 import qualified Data.IntSet as IntSet
 import Data.IntSet.Lens
@@ -510,13 +509,13 @@ compileChain (CJoin _ prevSetRef cn) =
       actStep newE = do
           -- see notes for CSwchE
           let pushSet = cn^.cnChildren.folded.label.to (IntSet.singleton)
-          (newE,pVals) <- lift $ do
+          pVals <- lift $ do
               pVals <- readTVar prevSetRef
               writeTVar prevSetRef $ PrevSwchRef
                 { _psrEdgeMap = simpleEdgeMap (newE^.label) pushSet
                 , _psrMkWeaks = tracebackMkWeakHeads newE
                 }
-              return (newE, pVals)
+              return pVals
           let prevSet = pVals^.psrEdgeMap
           pVals^.psrMkWeaks
           dgHeads._Wrapped.traverse._Wrapped %= \(EChain p c) ->

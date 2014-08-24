@@ -10,17 +10,11 @@ import Reactive.Impulse.Internal.Types
 import Reactive.Impulse.Internal.Chain
 import Reactive.Impulse.Internal.Graph
 
-import Control.Applicative
 import Control.Lens
 import Control.Monad.RWS
 import Control.Monad.State
 import Control.Concurrent.STM
 import Control.Concurrent.MVar
-
-import qualified Data.IntMap as IM
-
-import System.Mem.Weak
-import GHC.Conc.Sync (unsafeIOToSTM)
 
 -----------------------------------------------------------
 -- Network, starting/stopping.

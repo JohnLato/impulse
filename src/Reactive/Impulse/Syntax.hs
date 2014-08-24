@@ -24,7 +24,6 @@ module Reactive.Impulse.Syntax (
 import Reactive.Impulse.Core
 import Reactive.Impulse.Internal.Types (dlEvents)
 
-import qualified Data.IntSet as IntSet
 import Data.Monoid
 import Control.Applicative
 import Control.Lens

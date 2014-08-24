@@ -16,7 +16,6 @@ import Control.Applicative
 import Control.Concurrent.STM
 import Control.Concurrent.MVar
 import Control.Lens
-import Control.Monad.Identity
 
 import Data.IntMap (IntMap)
 import qualified Data.IntMap as IM
@@ -221,7 +220,10 @@ $(makeLenses ''DynGraph)
 
 $(makeLenses ''DirtyLog)
 
+dirtyChains :: Iso' ChainSet DirtyChains
 dirtyChains = from _DirtyChains
+
+chainEdgeMap :: Iso' (IntMap ChainSet) ChainEdgeMap
 chainEdgeMap = from _ChainEdgeMap
 
 markDirty :: Label -> ModGraphM ()
@@ -271,6 +273,7 @@ cPushSet = to f
 
 $(makePrisms ''BoundaryMap)
 
+boundaryMap :: Iso' (IntMap ChainSet) BoundaryMap
 boundaryMap = from _BoundaryMap
 
 instance Semigroup BoundaryMap where
@@ -282,6 +285,7 @@ instance Monoid BoundaryMap where
 
 $(makePrisms ''BoundarySet)
 
+boundarySet :: Iso' ChainSet BoundarySet
 boundarySet = from _BoundarySet
 
 cBoundarySet :: IndexPreservingGetter EChain BoundarySet

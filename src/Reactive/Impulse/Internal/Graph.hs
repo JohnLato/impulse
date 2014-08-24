@@ -21,7 +21,6 @@ import Reactive.Impulse.Internal.Weak
 
 import Control.Applicative
 import Control.Concurrent.STM hiding (mkWeakTVar)
-import Control.Concurrent.MVar (withMVar)
 import Control.Lens
 import Control.Monad.Identity
 
