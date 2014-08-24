@@ -118,7 +118,7 @@ net8 netsize = do
           let trigMap = IM.fromList $ zip [0..netsize-1] triggers
               evFinal = print <$> cc
           reactimate evFinal
-          liftIO $ print evFinal
+          liftIO $ print ("evFinal",evFinal)
 
           {-
            - this implementation is slower (20-30%) than doing unions and a single

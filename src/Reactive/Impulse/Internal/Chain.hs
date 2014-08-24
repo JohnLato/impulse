@@ -173,7 +173,7 @@ chainExists :: Label -> BuildingDynGraph -> Bool
 chainExists needle dg = dg ^. dgChainHeads . to (IM.member needle)
 
 -- finds a chain for the given label, and also updates the dgChainHeads
--- map to point to the latest known head
+-- map to point to the latest known head (to make later lookups cheaper)
 getChain :: Label -> ChainM EChain
 getChain needle = do
     dg <- get
@@ -269,7 +269,7 @@ addBound childLbl thisLbl evt chainAction = do
 addChain :: Label -> Event k -> ChainM ()
 addChain _ (EOut _ _) = error "impulse <addChain>: got a non-terminal EOut"
 addChain childLbl evt@(EIn lbl)  = addBound childLbl lbl evt $ do
-    mTrace $ "EIn " ++ show lbl
+    mTrace $ show ("EIn ", lbl, "child", childLbl)
     void $ addChains False childLbl lbl evt (CEvent lbl)
 addChain childLbl evt@(ENull lbl prevE)  = addBound childLbl lbl evt $ do
     mTrace $ "ENull " ++ show lbl
