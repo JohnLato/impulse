@@ -4,7 +4,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE RankNTypes #-}
 
-{-# OPTIONS_GHC -Wall #-}
+{-# OPTIONS_GHC -Wall -fno-warn-unused-imports #-}
 module Reactive.Impulse.Core
 
 where
@@ -25,7 +25,6 @@ import qualified Data.Monoid as Monoid
 import System.IO.Unsafe (unsafePerformIO)
 
 import Debug.Trace
-import Unsafe.Coerce
 
 -----------------------------------------------------------
 -- evil label stuff
