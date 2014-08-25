@@ -11,10 +11,10 @@ where
 
 import Reactive.Impulse.Core
 import Reactive.Impulse.Internal.RWST hiding ((<>))
+import Reactive.Impulse.STM.Fence
 
 import Control.Applicative
 import Control.Concurrent.STM
-import Control.Concurrent.MVar
 import Control.Lens
 
 import Data.IntMap (IntMap)
@@ -155,7 +155,7 @@ data Network = Network
     { _nInputs   :: NetHeadMap
     , _nDynGraph :: RunningDynGraph
     , _nActions  :: TVar (IO ())                -- actions to be run on init.
-    , _nLock     :: MVar ()
+    , _nTManager :: TransactionManager
     }
 
 data EInput where
@@ -179,7 +179,7 @@ type ChainM = RWST BoundarySet DirtyLog BuildingDynGraph STM
 
 -- Takes two inputs, the final sink and a value.  Performs all real terminal
 -- actions and returns an action to be performed afterwards.
-type CompiledChain r a = (r -> IO ()) -> a -> IO [UpdateStep]
+type CompiledChain r a = (r -> IO ()) -> a -> STM [UpdateStep]
 
 -- There are 3 phases to updates:
 --  1. Read from behaviors
@@ -189,22 +189,22 @@ type CompiledChain r a = (r -> IO ()) -> a -> IO [UpdateStep]
 --  The first phase is handled by the IO result of CompiledChain.
 --  The second/third phases are inverted: we construct an action that writes to
 --  behaviors and returns the reactimation runners.  We do it this way as an
---  artifact of using STM (although that's going to go away soon).
+--  artifact of using STM
 data UpdateStep =
     Norm (STM (IO ()))
   | Mod  (ChainM ())
-  | DynMod (ChainM ()) (IO [UpdateStep])
+  | DynMod (IO (ChainM (), STM [UpdateStep]))
   -- for DynMod, we first need to run the ChainM action to update the graph.
   -- then we continue with running the update steps.  In this case, we need to
   -- grab the extra IO layer to do the initial behavior readings after the
   -- graph has been updated (since updating the graph may cause events to fire
   -- and behaviors to update).
 
-useUpdateStep :: (STM (IO ()) -> b) -> (ChainM () -> b) -> (ChainM () -> IO [UpdateStep] -> b) -> UpdateStep -> b
+useUpdateStep :: (STM (IO ()) -> b) -> (ChainM () -> b) -> (IO (ChainM (), STM [UpdateStep]) -> b) -> UpdateStep -> b
 useUpdateStep f g h u = case u of
     Norm x -> f x
     Mod  x -> g x
-    DynMod x y -> h x y
+    DynMod akt -> h akt
 
 emptyCompiledChain :: CompiledChain r a
 emptyCompiledChain _ _ = return []

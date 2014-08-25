@@ -274,18 +274,16 @@ boundSet g = g^.dgHeads._Wrapped.traverse._Wrapped.cBoundarySet
 -- which can then be passed in to every internal call.
 -- But how do I know internally that we're calling a network input?
 -- Going to have to look at the values returned from SGen
---
--- Is this still true?  feel like I've fixed it, don't recall...
-runUpdates :: Network -> IO [UpdateStep] -> IO ()
--- runUpdates network doStep = withMVar (network^.nLock) $ \() -> do
+runUpdates :: Network -> STM [UpdateStep] -> IO ()
 runUpdates network doStep = do
-    updateSteps <- doStep
+    updateSteps <- atomically $ doStep
     let runSteps :: UpdateStep -> IO (IO ())
         runSteps = useUpdateStep atomically (atomically . dynUpdateGraph network)
                               runDynStep
-        runDynStep chn dynActs = do
-            dynUpdateStep <- atomically $ dynUpdateGraph network chn
-            usteps2 <- dynActs
+        runDynStep akt = do -- chn dynActs = do
+            (chn,dynActs) <- akt
+            (dynUpdateStep,usteps2) <- atomically $
+                (,) <$> dynUpdateGraph network chn <*> dynActs
             updateStep' <- mapM runSteps usteps2
             return $ dynUpdateStep >> sequence_ updateStep'
     actions <- mapM runSteps updateSteps

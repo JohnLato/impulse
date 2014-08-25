@@ -451,9 +451,8 @@ compileChain (CAcc _ _) =
     error "impulse <compileChain>: attempt to accumulate to non-accumulating behavior!"
 compileChain (CApply _ cb next) =
     let !next'  = compileNode next
-        !apReader = atomically $ readCB cb
     in \sink a -> do
-        f <- apReader
+        f <- readCB cb
         next' sink $! f a
 
 -- updating a dynamic behavior
@@ -463,9 +462,10 @@ compileChain (CSwch _ (CBSwitch ref)) =
         return [Mod actStep]
 
 compileChain (CDyn _ next) =
-    \sink newSGen -> do
-        (a,sgstate) <- runStateT newSGen mempty
-        return [DynMod (actStep sgstate) (next' sink a)]
+    \sink newSGen -> return
+        [DynMod $ do
+            (a,sgstate) <- runStateT newSGen mempty
+            return (actStep sgstate,next' sink a) ]
     where
       !next'  = compileNode next
       actStep sgstate = do
