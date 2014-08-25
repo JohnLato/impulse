@@ -186,10 +186,11 @@ type CompiledChain r a = (r -> IO ()) -> a -> STM [UpdateStep]
 --  2. Run reactimated code
 --  3. Write to behaviors.
 --
---  The first phase is handled by the IO result of CompiledChain.
+--  The first phase is handled by the STM result of CompiledChain.
 --  The second/third phases are inverted: we construct an action that writes to
 --  behaviors and returns the reactimation runners.  We do it this way as an
---  artifact of using STM
+--  artifact of using STM, because it allows for reading/writing updates
+--  atomically.  Although for DynMod we need to take a lock anyway.
 data UpdateStep =
     Norm (STM (IO ()))
   | Mod  (ChainM ())

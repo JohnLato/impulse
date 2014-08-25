@@ -49,8 +49,8 @@ transactExclusive tm akt = atomically $ do
 
 -- | Commit a transaction.  If the predicate is 'True', an exclusive
 -- transaction will be started.
-maybeExclusive :: TransactionManager -> STM a -> (a -> Bool) -> IO (a, Maybe Ticket)
-maybeExclusive tm akt p = atomically $ do
+maybeExclusive :: TransactionManager -> (a -> Bool) -> STM a -> IO (a, Maybe Ticket)
+maybeExclusive tm p akt = atomically $ do
     lastFence <- takeTMVar $ gFence tm
     a <- akt
     if p a

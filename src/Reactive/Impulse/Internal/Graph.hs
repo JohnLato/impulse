@@ -18,6 +18,7 @@ import Reactive.Impulse.Internal.RWST hiding ((<>))
 import Reactive.Impulse.Internal.Types
 import Reactive.Impulse.Internal.Chain
 import Reactive.Impulse.Internal.Weak
+import Reactive.Impulse.STM.Fence
 
 import Control.Applicative
 import Control.Concurrent.STM hiding (mkWeakTVar)
@@ -268,26 +269,51 @@ prepareForMerge cem = do
 boundSet :: BuildingDynGraph -> BoundarySet
 boundSet g = g^.dgHeads._Wrapped.traverse._Wrapped.cBoundarySet
 
--- TODO: got a recursive lock problem.  Need to fix it.
--- The input TVar needs to include a lock context.  Any actions run from
--- outside the network have to be wrapped to provide an empty context,
--- which can then be passed in to every internal call.
--- But how do I know internally that we're calling a network input?
--- Going to have to look at the values returned from SGen
+data Something =
+    Easy (IO ())
+  | Hard [IO (ChainM (), STM [UpdateStep])] (IO ())
+
+injectIO :: Something -> IO () -> Something
+injectIO (Easy finalAcc) post = Easy (post>>finalAcc)
+injectIO (Hard akts finalAcc) post = Hard akts (post>>finalAcc)
+
+injectHard :: Something -> IO (ChainM (), STM [UpdateStep]) -> Something
+injectHard (Easy finalAcc) akt = Hard [akt] finalAcc
+injectHard (Hard akts finalAcc) akt = Hard (akt:akts) finalAcc
+
+isHard :: Something -> Bool
+isHard (Hard _ _) = True
+isHard _ = False
+
 runUpdates :: Network -> STM [UpdateStep] -> IO ()
-runUpdates network doStep = do
-    updateSteps <- atomically $ doStep
+runUpdates network doSteps = do
+    let tm = network^.nTManager
+    let procStep laters doStep = case doStep of
+            Norm akt -> akt >>= \res -> return (injectIO laters res)
+            Mod graphmod -> dynUpdateGraph network graphmod >>= \res -> return (injectIO laters res)
+            DynMod akt -> return $ injectHard laters akt
+
+    -- used for running any following steps after a DynMod
     let runSteps :: UpdateStep -> IO (IO ())
         runSteps = useUpdateStep atomically (atomically . dynUpdateGraph network)
                               runDynStep
-        runDynStep akt = do -- chn dynActs = do
+        runDynStep akt = do
             (chn,dynActs) <- akt
-            (dynUpdateStep,usteps2) <- atomically $
-                (,) <$> dynUpdateGraph network chn <*> dynActs
+            dynUpdateStep <- atomically $ dynUpdateGraph network chn
+            usteps2 <- atomically dynActs
             updateStep' <- mapM runSteps usteps2
             return $ dynUpdateStep >> sequence_ updateStep'
-    actions <- mapM runSteps updateSteps
-    sequence_ actions
+
+    maybeExclusive tm isHard (doSteps >>= foldM procStep (Easy $ return ())) >>= \case
+      (Easy finalSteps,Nothing) -> finalSteps
+      (Hard akts finalSteps, Just ticket) -> do
+          finalSteps
+          posts1 <- mapM runDynStep akts
+          sequence_ posts1
+          commitExclusive tm ticket
+      -- this should never happen, but we can code for it anyway
+      (Easy finalSteps, Just ticket) -> finalSteps >> commitExclusive tm ticket
+      (Hard _ _, Nothing) -> error "impulse: runUpdates didn't get a ticket?"
 
 ------------------------------------------------------------------
 -- helpers for handling weak refs.
