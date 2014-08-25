@@ -1,12 +1,14 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ViewPatterns #-}
 
 {-# OPTIONS -Wall #-}
 module Reactive.Impulse.STM.Fence (
-  Gatekeeper,
+  TransactionManager,
   Ticket,
-  newGatekeeper,
-  fencedSTM,
+  newTransactionManager,
+  transactSTM,
+  transactExclusive,
   maybeExclusive,
   commitExclusive,
 ) where
@@ -15,45 +17,55 @@ import Control.Concurrent.STM
 import Control.Applicative
 import Data.Word
 
-data Gatekeeper = GK
+data TransactionManager = GK
     { gFence :: TMVar Ticket
     , gCommiting :: TVar Ticket
     }
 
-newtype Ticket = Ticket {unTicket :: Word} deriving (Eq, Ord, Num)
+newtype Ticket = Ticket {unTicket :: Word64} deriving (Eq, Ord)
 
-newGatekeeper :: IO Gatekeeper
-newGatekeeper = GK <$> newTMVarIO 0 <$> newTVarIO 0
+newTransactionManager :: IO TransactionManager
+newTransactionManager = GK <$> newTMVarIO (Ticket 0) <*> newTVarIO (Ticket 0)
 
-getLastFence :: GateKeeper -> STM Ticket
-getLastFence gk = readTMVar (gFence gk)
-
-checkLastFence :: GateKeeper -> Ticket -> STM Bool
-checkLastFence ticket gk = ((== Just ticket) <$> tryReadTMVar (gFence gk))
-
-fencedSTM :: Gatekeeper -> STM a -> IO a
-fencedSTM gk akt = atomically $ do
-    lastFence  <- getLastFence gk
-    always $ checkLastFence gk ticket
+-- | Run an STM transaction guarded by the 'TransactionManager'.
+transactSTM :: TransactionManager -> STM a -> IO a
+transactSTM tm akt = atomically $ do
+    !_lastFence <- readTMVar $ gFence tm
     akt
 
-maybeExclusive :: Gatekeeper -> STM a -> (a -> Bool) -> IO (a, Maybe Ticket)
-maybeExclusive gk akt p = atomically $ do
-    lastFence <- getLastFence gk
+-- | Begin an exclusive transaction.  After this function returns, no
+-- further transactions may begin until this transaction commits
+-- (see 'commitExclusive').
+transactExclusive :: TransactionManager -> STM a -> IO (a, Ticket)
+transactExclusive tm akt = atomically $ do
+    -- slightly re-ordered from maybeExclusive; since we know we'll need to
+    -- take the TMVar we may as well do so sooner (which will likely reduce
+    -- conflicts with other exclusive transactions
+    lastFence <- takeTMVar $ gFence tm
+    a <- akt
+    let newFence = Ticket $ unTicket lastFence+1
+    writeTVar (gCommiting tm) newFence
+    return $ (a, newFence)
+
+-- | Commit a transaction.  If the predicate is 'True', an exclusive
+-- transaction will be started.
+maybeExclusive :: TransactionManager -> STM a -> (a -> Bool) -> IO (a, Maybe Ticket)
+maybeExclusive tm akt p = atomically $ do
+    lastFence <- takeTMVar $ gFence tm
     a <- akt
     if p a
       then do
-          curFence <- takeTMVar (gFence gk)
-          check $ lastFence == curFence
-          let newFence = curFence+1
-          writeTVar (gCommiting gk) newFence
+          let !newFence = Ticket $ unTicket lastFence+1
+          writeTVar (gCommiting tm) newFence
           return $ (a, Just newFence)
       else do
-          always $ checkLastFence gk lastFence
+          putTMVar (gFence tm) lastFence
           return (a,Nothing)
 
--- TODO: I should check better that the ticket is valid.
-commitExclusive :: Gatekeeper -> Ticket -> STM ()
-commitExclusive gk ticket = do
-    always $ (== ticket) <$> readTVar (gCommiting gk)
-    putTMVar (gFence gk) ticket
+-- | Commit an exclusive transaction.  After this commits
+-- other transactions may continue.
+commitExclusive :: TransactionManager -> Ticket -> IO ()
+commitExclusive tm ticket = atomically $ do
+    toCommit <- readTVar (gCommiting tm)
+    check $ toCommit == ticket
+    putTMVar (gFence tm) ticket

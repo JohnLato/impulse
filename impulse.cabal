@@ -27,7 +27,7 @@ library
                        Reactive.Impulse.Internal.Graph,
                        Reactive.Impulse.Internal.RWST,
                        Reactive.Impulse.Internal.Types
-  -- other-modules:       
+  other-modules:       Reactive.Impulse.STM.Fence
   other-extensions:    BangPatterns, DeriveFunctor, GADTs, LambdaCase, NamedFieldPuns, RecordWildCards, RecursiveDo, StandaloneDeriving, ScopedTypeVariables, GeneralizedNewtypeDeriving, TemplateHaskell, RankNTypes, ViewPatterns, MagicHash, UnboxedTuples, TupleSections, FlexibleInstances, MultiParamTypeClasses, Rank2Types
   build-depends:       base >=4.6 && <4.8,
                        transformers >=0.3 && <0.5,
