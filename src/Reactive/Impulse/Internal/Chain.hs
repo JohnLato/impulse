@@ -440,29 +440,31 @@ compileChain (CMap _ f next) =
 
 compileChain (CFilt _ p next) =
     let !next' = compileNode next
-    in \sink -> maybe (return []) (next' sink) . p
+    in \sink -> maybe (return mempty) (next' sink) . p
 
 compileChain (COut _) =
-    \sink a -> return [Norm (return (sink a))]
+    \sink a -> return $ mempty & ubOutputs .~ [sink a]
 compileChain (CAcc _ (PushCB ref)) =
-    const $ return . pure . Norm . (return () <$) . modifyTVar' ref
+    \_sink a -> mempty <$ modifyTVar' ref a
 
 compileChain (CAcc _ _) =
     error "impulse <compileChain>: attempt to accumulate to non-accumulating behavior!"
 compileChain (CApply _ cb next) =
     let !next'  = compileNode next
     in \sink a -> do
-        f <- readCB cb
-        next' sink $! f a
+        let doRead = do
+                f <- readCB cb
+                next' sink $! f a
+        return $ mempty & readSteps .~ [doRead]
 
 -- updating a dynamic behavior
 compileChain (CSwch _ (CBSwitch ref)) =
     \_sink newB -> do
         let actStep = makeBehavior newB >>= lift . writeTVar ref
-        return [Mod actStep]
+        return $ mempty & modSteps .~ [Mod actStep]
 
 compileChain (CDyn _ next) =
-    \sink newSGen -> return
+    \sink newSGen -> return $ mempty & modSteps .~
         [DynMod $ do
             (a,sgstate) <- runStateT newSGen mempty
             return (actStep sgstate,next' sink a) ]
@@ -474,7 +476,7 @@ compileChain (CDyn _ next) =
           scribe (dlChains . from dirtyChains) $ sgstate^.inputs.to IM.keysSet
 
 compileChain (CSwchE _ prevSetRef eventB cn) = 
-    \_sink _ -> return [Mod actStep]
+    \_sink _ -> return $ mempty & modSteps .~ [Mod actStep]
     where
       tmpHead e = IM.insertWith (const id) (e^.label) $ Identity e
       actStep = do
@@ -516,7 +518,7 @@ compileChain (CSwchE _ prevSetRef eventB cn) =
           pushSet^!members.act (flip addChain newE)
 
 compileChain (CJoin _ prevSetRef cn) =
-    \_sink newE -> return [Mod $ actStep newE]
+    \_sink newE -> return $ mempty & modSteps .~ [Mod $ actStep newE]
     where
       tmpHead e = IM.insertWith (const id) (e^.label) $ Identity e
       actStep newE = do
@@ -547,7 +549,8 @@ compileChain (CJoin _ prevSetRef cn) =
 
 compileNode :: (r ~ IO ()) => ChainNode (Chain r a) -> CompiledChain r a
 compileNode cn =
+    -- case over cnChildren compileChain cn of
     case map compileChain (cn^.cnChildren) of
-        [] -> \_ _ -> return []
+        [] -> \_ _ -> return mempty
         [next] -> next
-        nexts  -> \sink a -> concat <$> mapM (\f -> f sink a) nexts
+        nexts  -> \sink a -> mconcat <$> mapM (\f -> f sink a) nexts

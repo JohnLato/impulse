@@ -179,36 +179,46 @@ type ChainM = RWST BoundarySet DirtyLog BuildingDynGraph STM
 
 -- Takes two inputs, the final sink and a value.  Performs all real terminal
 -- actions and returns an action to be performed afterwards.
-type CompiledChain r a = (r -> IO ()) -> a -> STM [UpdateStep]
+type CompiledChain r a = (r -> IO ()) -> a -> STM UpdateBuilder
 
--- There are 3 phases to updates:
---  1. Read from behaviors
---  2. Run reactimated code
---  3. Write to behaviors.
+data UpdateBuilder = UpdateBuilder
+  { _readSteps :: [STM UpdateBuilder]
+  , _modSteps  :: [UpdateStep]
+  , _ubOutputs :: [IO ()]
+  }
+
+instance Semigroup UpdateBuilder where
+  l <> r = UpdateBuilder
+      (_readSteps l <> _readSteps r)
+      (_modSteps l <> _modSteps r)
+      (_ubOutputs l <> _ubOutputs r)
+
+instance Monoid UpdateBuilder where
+  mempty = UpdateBuilder [] [] []
+  mappend = (<>)
+
+-- There are 2 phases to updates:
+--  1. Write to behaviors/update network
+--  2. Read from behaviors
 --
---  The first phase is handled by the STM result of CompiledChain.
---  The second/third phases are inverted: we construct an action that writes to
---  behaviors and returns the reactimation runners.  We do it this way as an
---  artifact of using STM, because it allows for reading/writing updates
---  atomically.  Although for DynMod we need to take a lock anyway.
+--  We attempt to find a fixpoint of traversing the graph.
+--
 data UpdateStep =
-    Norm (STM (IO ()))
-  | Mod  (ChainM ())
-  | DynMod (IO (ChainM (), STM [UpdateStep]))
+    Mod  (ChainM ())
+  | DynMod (IO (ChainM (), STM UpdateBuilder))
   -- for DynMod, we first need to run the ChainM action to update the graph.
   -- then we continue with running the update steps.  In this case, we need to
   -- grab the extra IO layer to do the initial behavior readings after the
   -- graph has been updated (since updating the graph may cause events to fire
   -- and behaviors to update).
 
-useUpdateStep :: (STM (IO ()) -> b) -> (ChainM () -> b) -> (IO (ChainM (), STM [UpdateStep]) -> b) -> UpdateStep -> b
-useUpdateStep f g h u = case u of
-    Norm x -> f x
-    Mod  x -> g x
-    DynMod akt -> h akt
+useUpdateStep :: (ChainM () -> b) -> (IO (ChainM (), STM UpdateBuilder) -> b) -> UpdateStep -> b
+useUpdateStep f g u = case u of
+    Mod  x -> f x
+    DynMod akt -> g akt
 
 emptyCompiledChain :: CompiledChain r a
-emptyCompiledChain _ _ = return []
+emptyCompiledChain _ _ = return mempty
 
 $(makePrisms ''ChainEdgeMap)
 $(makePrisms ''DirtyChains)
@@ -220,6 +230,7 @@ $(makeLenses ''FrozenDynGraph)
 $(makeLenses ''DynGraph)
 
 $(makeLenses ''DirtyLog)
+$(makeLenses ''UpdateBuilder)
 
 dirtyChains :: Iso' ChainSet DirtyChains
 dirtyChains = from _DirtyChains
@@ -317,3 +328,9 @@ chainLabelTree c =
 
 showChainTree :: Chain r a -> String
 showChainTree = drawTree . chainLabelTree
+
+takeModStep :: UpdateBuilder -> (UpdateBuilder, Maybe UpdateStep)
+takeModStep ub = case ub^.modSteps of
+    []     -> (ub,Nothing)
+    (x:xs) -> (ub & modSteps .~ xs, Just x)
+

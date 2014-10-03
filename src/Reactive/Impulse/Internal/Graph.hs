@@ -269,51 +269,46 @@ prepareForMerge cem = do
 boundSet :: BuildingDynGraph -> BoundarySet
 boundSet g = g^.dgHeads._Wrapped.traverse._Wrapped.cBoundarySet
 
-data Something =
-    Easy (IO ())
-  | Hard [IO (ChainM (), STM [UpdateStep])] (IO ())
+data Stepper =
+    AllDone [IO ()]
+  | NeedsIO UpdateStep UpdateBuilder
 
-injectIO :: Something -> IO () -> Something
-injectIO (Easy finalAcc) post = Easy (post>>finalAcc)
-injectIO (Hard akts finalAcc) post = Hard akts (post>>finalAcc)
+needsIO :: Stepper -> Bool
+needsIO (NeedsIO _ _) = True
+needsIO _ = False
 
-injectHard :: Something -> IO (ChainM (), STM [UpdateStep]) -> Something
-injectHard (Easy finalAcc) akt = Hard [akt] finalAcc
-injectHard (Hard akts finalAcc) akt = Hard (akt:akts) finalAcc
-
-isHard :: Something -> Bool
-isHard (Hard _ _) = True
-isHard _ = False
-
-runUpdates :: Network -> STM [UpdateStep] -> IO ()
+runUpdates :: Network -> STM UpdateBuilder -> IO ()
 runUpdates network doSteps = do
     let tm = network^.nTManager
-    let procStep laters doStep = case doStep of
-            Norm akt -> akt >>= \res -> return (injectIO laters res)
-            Mod graphmod -> dynUpdateGraph network graphmod >>= \res -> return (injectIO laters res)
-            DynMod akt -> return $ injectHard laters akt
+    let stepBuilder :: UpdateBuilder -> STM Stepper
+        stepBuilder ub = case ub^.modSteps of
+            (Mod m:steps) -> do
+                cleanupActs <- dynUpdateGraph network m
+                stepBuilder $ ub & modSteps .~ steps & ubOutputs %~ (cleanupActs :)
+            (step@(DynMod _):steps) -> return $ NeedsIO step $ ub & modSteps .~ steps
+            [] -> case ub^.readSteps of
+                (step:steps) -> do
+                    ub' <- step
+                    stepBuilder $ ub' & readSteps %~ (steps <>) & ubOutputs %~ ((ub^.ubOutputs) <>)
+                [] -> return . AllDone $ ub^.ubOutputs
 
-    -- used for running any following steps after a DynMod
-    let runSteps :: UpdateStep -> IO (IO ())
-        runSteps = useUpdateStep atomically (atomically . dynUpdateGraph network)
-                              runDynStep
-        runDynStep akt = do
-            (chn,dynActs) <- akt
-            dynUpdateStep <- atomically $ dynUpdateGraph network chn
-            usteps2 <- atomically dynActs
-            updateStep' <- mapM runSteps usteps2
-            return $ dynUpdateStep >> sequence_ updateStep'
+        stepBuilderIO :: UpdateBuilder -> IO ()
+        stepBuilderIO ub = atomically (stepBuilder ub) >>= \case
+            AllDone finalSteps -> sequence_ finalSteps
+            NeedsIO (DynMod akt) ub' -> do
+              (chn,dynUb) <- akt
+              updateFinalizers <- atomically $ dynUpdateGraph network chn
+              ub'2 <- atomically dynUb
+              stepBuilderIO $ ub' <> ub'2 & ubOutputs %~ (updateFinalizers:)
+            NeedsIO _ _ -> error "<impulse>: stepBuilderIO: didn't get a DynMod!"
 
-    maybeExclusive tm isHard (doSteps >>= foldM procStep (Easy $ return ())) >>= \case
-      (Easy finalSteps,Nothing) -> finalSteps
-      (Hard akts finalSteps, Just ticket) -> do
-          finalSteps
-          posts1 <- mapM runDynStep akts
-          sequence_ posts1
+    maybeExclusive tm needsIO (doSteps >>= stepBuilder) >>= \case
+      (AllDone finalSteps, Nothing) -> sequence_ finalSteps
+      (NeedsIO ioStep rest, Just ticket) -> do
+          stepBuilderIO $ rest & modSteps %~ (ioStep:)
           commitExclusive tm ticket
-      -- this should never happen, but we can code for it anyway
-      (Easy finalSteps, Just ticket) -> finalSteps >> commitExclusive tm ticket
-      (Hard _ _, Nothing) -> error "impulse: runUpdates didn't get a ticket?"
+      (AllDone _, Just _) -> error "<impulse> Got a ticket?"
+      (NeedsIO _ _, Nothing) -> error "<impulse> needs a ticket!"
 
 ------------------------------------------------------------------
 -- helpers for handling weak refs.
