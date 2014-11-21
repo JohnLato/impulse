@@ -71,7 +71,7 @@ instance Functor Event where
     fmap f e = unsafePerformIO $ getLabel >>= \lbl -> return $ EMap lbl f e
 
 instance Monoid.Monoid (Event a) where
-    mempty  = EIn (unsafePerformIO getLabel)
+    mempty  = EIn (-1)
     mappend l r = unsafePerformIO $ getLabel >>= \lbl -> return $ EUnion lbl l r
     mconcat = binConcat
 
