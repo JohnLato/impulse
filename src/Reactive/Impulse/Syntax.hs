@@ -35,13 +35,19 @@ import System.IO.Unsafe (unsafePerformIO)
 -- Event/Behavior combinators
 
 stepper :: a -> Event a -> Behavior a
-stepper a0 e = BAcc (unsafePerformIO getLabel) a0 (const <$> e)
+stepper a0 e = unsafePerformIO $ do
+    lbl <- getLabel
+    return $ BAcc lbl a0 (const <$> e)
 
 accumB :: a -> Event (a -> a) -> Behavior a
-accumB a e = BAcc (unsafePerformIO getLabel) a e
+accumB a e = unsafePerformIO $ do
+    lbl <- getLabel
+    return $ BAcc lbl a e
 
 applyB :: Event a -> Behavior (a -> b) -> Event b
-applyB e b = EApply (unsafePerformIO getLabel) e b
+applyB e b = unsafePerformIO $ do
+    lbl <- getLabel
+    return $ EApply lbl e b
 
 applyE :: Event (a -> b) -> Behavior a -> Event b
 applyE e b = applyB e ((\a -> ($ a)) <$> b)
@@ -50,19 +56,29 @@ sample :: Event a -> Behavior b -> Event b
 sample e = applyB e . (const <$>)
 
 switchB :: Behavior a -> Event (Behavior a) -> Behavior a
-switchB b0 e = BSwch (unsafePerformIO getLabel) b0 e
+switchB b0 e = unsafePerformIO $ do
+    lbl <- getLabel
+    return $ BSwch lbl b0 e
 
 switchE :: Behavior (Event a) -> Event a
-switchE b = ESwch (unsafePerformIO getLabel) b
+switchE b = unsafePerformIO $ do
+    lbl <- getLabel
+    return $ ESwch lbl b
 
 dynE :: Event (SGen a) -> Event a
-dynE e = EDyn (unsafePerformIO getLabel) e
+dynE e = unsafePerformIO $ do
+    lbl <- getLabel
+    return $ EDyn lbl e
 
 filterE :: (a -> Maybe b) -> Event a -> Event b
-filterE p e = EFilt (unsafePerformIO getLabel) p e
+filterE p e = unsafePerformIO $ do
+    lbl <- getLabel
+    return $ EFilt lbl p e
 
 joinE :: Event (Event a) -> Event a
-joinE e = EJoin (unsafePerformIO getLabel) e
+joinE e = unsafePerformIO $ do
+    lbl <- getLabel
+    return $ EJoin lbl e
 
 onCreation :: a -> SGen (Event a)
 onCreation a = do
