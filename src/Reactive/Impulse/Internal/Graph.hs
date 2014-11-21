@@ -280,20 +280,9 @@ needsIO _ = False
 runUpdates :: Network -> STM UpdateBuilder -> IO ()
 runUpdates network doSteps = do
     let tm = network^.nTManager
-    let stepBuilder :: UpdateBuilder -> STM Stepper
-        stepBuilder ub = case ub^.modSteps of
-            (Mod m:steps) -> do
-                cleanupActs <- dynUpdateGraph network m
-                stepBuilder $ ub & modSteps .~ steps & ubOutputs %~ (cleanupActs :)
-            (step@(DynMod _):steps) -> return $ NeedsIO step $ ub & modSteps .~ steps
-            [] -> case ub^.readSteps of
-                (step:steps) -> do
-                    ub' <- step
-                    stepBuilder $ ub' & readSteps %~ (steps <>) & ubOutputs %~ ((ub^.ubOutputs) <>)
-                [] -> return . AllDone $ ub^.ubOutputs
 
-        stepBuilderIO :: UpdateBuilder -> IO ()
-        stepBuilderIO ub = atomically (stepBuilder ub) >>= \case
+    let stepBuilderIO :: UpdateBuilder -> IO ()
+        stepBuilderIO ub = atomically (stepBuilder network ub) >>= \case
             AllDone finalSteps -> sequence_ finalSteps
             NeedsIO (DynMod akt) ub' -> do
               (chn,dynUb) <- akt
@@ -302,13 +291,31 @@ runUpdates network doSteps = do
               stepBuilderIO $ ub' <> ub'2 & ubOutputs %~ (updateFinalizers:)
             NeedsIO _ _ -> error "<impulse>: stepBuilderIO: didn't get a DynMod!"
 
-    maybeExclusive tm needsIO (doSteps >>= stepBuilder) >>= \case
+    maybeExclusive tm needsIO (doSteps >>= stepBuilder network) >>= \case
       (AllDone finalSteps, Nothing) -> sequence_ finalSteps
       (NeedsIO ioStep rest, Just ticket) -> do
           stepBuilderIO $ rest & modSteps %~ (ioStep:)
           commitExclusive tm ticket
       (AllDone _, Just _) -> error "<impulse> Got a ticket?"
       (NeedsIO _ _, Nothing) -> error "<impulse> needs a ticket!"
+
+stepBuilder :: Network -> UpdateBuilder -> STM Stepper
+stepBuilder network = go
+  where
+    go ub = case ub^.modSteps of
+      (Mod m:steps) -> do
+          cleanupActs <- dynUpdateGraph network m
+          go $ ub & modSteps .~ steps & ubOutputs %~ (cleanupActs :)
+      (step@(DynMod _):steps) -> return $ NeedsIO step $ ub & modSteps .~ steps
+      [] -> case ub^.readSteps of
+          (step:steps) -> do
+              ub' <- step
+              let outsF = case ub^.ubOutputs of
+                            []  -> id
+                            [x] -> ubOutputs %~ (x:)
+                            xs  -> ubOutputs %~ (xs ++)
+              go $ ub' & readSteps %~ (steps <>) & outsF
+          [] -> return . AllDone $ ub^.ubOutputs
 
 ------------------------------------------------------------------
 -- helpers for handling weak refs.

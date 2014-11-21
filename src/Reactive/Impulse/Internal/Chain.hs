@@ -553,4 +553,4 @@ compileNode cn =
     case map compileChain (cn^.cnChildren) of
         [] -> \_ _ -> return mempty
         [next] -> next
-        nexts  -> \sink a -> mconcat <$> mapM (\f -> f sink a) nexts
+        nexts  -> \sink a -> foldM (\acc f -> (acc <>) <$> f sink a) mempty nexts
