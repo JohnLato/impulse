@@ -34,11 +34,11 @@ newtype MkWeak = MkWeak {unMkWeak :: forall a. a -> Maybe (IO ()) -> IO (Weak a)
 
 data PrevSwchRef = PrevSwchRef
     { _psrEdgeMap :: ChainEdgeMap
-    , _psrMkWeaks :: ChainM ()
+    , _psrMkWeaks :: IM.IntMap MkWeak
     }
 
 emptyPrevSwchRef :: PrevSwchRef
-emptyPrevSwchRef = PrevSwchRef mempty (return ())
+emptyPrevSwchRef = PrevSwchRef mempty mempty
 
 data ChainNode t = ChainNode
     { _cnChildren  :: [ t ]    -- direct children of this node

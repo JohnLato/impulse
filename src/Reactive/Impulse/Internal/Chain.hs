@@ -275,7 +275,7 @@ addBound childLbl thisLbl evt chainAction = do
       then do
             dgBoundMap.from boundaryMap %=
               IM.insertWith (<>) childLbl (IntSet.singleton thisLbl)
-            tracebackMkWeakHeads evt
+            dgMkWeaks %= (tracebackMkWeakHeads evt <>)
       else chainAction
 
 
@@ -344,18 +344,21 @@ addChain child evt@(EDyn lbl prevE) = addBound childLbl lbl evt $ do
     Fold.forM_ added $ \newChain -> addChain newChain prevE
    where childLbl = child^.label
 
-tracebackMkWeakHeads :: Event k -> ChainM ()
-tracebackMkWeakHeads e = case e of
-    EIn _ -> dgMkWeaks %= (IM.insert (e^.label) $ MkWeak $ mkWeak e)
-    EOut _ e'      -> tracebackMkWeakHeads e'
-    ENull _ e'     -> tracebackMkWeakHeads e'
-    EMap _ _ e'    -> tracebackMkWeakHeads e'
-    EFilt _ _ e'   -> tracebackMkWeakHeads e'
-    EUnion _ e1 e2 -> tracebackMkWeakHeads e1 >> tracebackMkWeakHeads e2
-    EApply _ e' _  -> tracebackMkWeakHeads e'
-    ESwch _ _      -> return ()
-    EJoin _ e'     -> tracebackMkWeakHeads e'
-    EDyn _ e'      -> tracebackMkWeakHeads e'
+tracebackMkWeakHeads :: Event k -> IM.IntMap MkWeak
+tracebackMkWeakHeads e0 = go IM.empty e0
+  where
+    go :: IM.IntMap MkWeak -> Event j -> IM.IntMap MkWeak
+    go acc e = case e of
+        EIn _ -> IM.insert (e^.label) (MkWeak $ mkWeak e) acc
+        EOut _ e'      -> go acc e'
+        ENull _ e'     -> go acc e'
+        EMap _ _ e'    -> go acc e'
+        EFilt _ _ e'   -> go acc e'
+        EUnion _ e1 e2 -> go (go acc e1) e2
+        EApply _ e' _  -> go acc e'
+        ESwch _ _      -> acc
+        EJoin _ e'     -> go acc e'
+        EDyn _ e'      -> go acc e'
 
 addChains
     :: (r ~ IO ())
@@ -534,7 +537,7 @@ compileChain (CSwchE _ prevSetRef eventB cn) =  {-# SCC "CSwchE" #-}
                 }
               return (newE, pVals)
           let prevSet = pVals^.psrEdgeMap
-          pVals^.psrMkWeaks
+          dgMkWeaks %= (pVals^.psrMkWeaks <>)
           dgHeads._Wrapped.traverse._Wrapped %= \(EChain p c) ->
               EChain p $ removeEdges prevSet c
           tell $ mempty
@@ -570,7 +573,7 @@ compileChain (CJoin _ prevSetRef cn) = {-# SCC "CJoin" #-}
                 }
               return pVals
           let prevSet = pVals^.psrEdgeMap
-          pVals^.psrMkWeaks
+          dgMkWeaks %= (pVals^.psrMkWeaks <>)
           dgHeads._Wrapped.traverse._Wrapped %= \(EChain p c) ->
               EChain p $ removeEdges prevSet c
           tell $ mempty
