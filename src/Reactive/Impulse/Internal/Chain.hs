@@ -1,8 +1,10 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiWayIf #-}
+{-# LANGUAGE ViewPatterns #-}
 
-{-# OPTIONS_GHC -Wall #-}
+{-# OPTIONS_GHC -Wall -fprof-auto-top #-}
 -- The 'Chain' is the main runtime representation of a reactive network.
 -- An input is connected to several chains, each of which is a series of
 -- IO actions (pushes), culminating in either a 'reactimate' or updating
@@ -28,6 +30,7 @@ import Control.Monad.Identity
 import Control.Monad.State (runStateT)
 import Control.Monad.RWS
 
+import qualified Data.Foldable as Fold
 import qualified Data.IntMap as IM
 import qualified Data.IntSet as IntSet
 import Data.IntSet.Lens
@@ -137,10 +140,24 @@ addHead :: EChain -> MkWeak -> BuildingDynGraph -> BuildingDynGraph
 addHead e@(EChain _ c) mkw g = g
   & (dgHeads._Wrapped)%~(IM.insert lbl $ Identity e)
   & dgMkWeaks%~(IM.insert lbl mkw)
-  & dgChainHeads%~(IM.fromSet (const lbl) pushSet' <>)
+  & dgChainHeads%~ modChainHeads
  where
-  lbl = e^.label
-  !pushSet' = maybe (IntSet.singleton lbl) (IntSet.insert lbl) (c^.cPushSet)
+  !lbl = e^.label
+  modChainHeads oldChainHeads = case c^.cPushSet of
+      Nothing -> IM.insert lbl lbl oldChainHeads
+      Just childs -> IM.insert lbl lbl $ IM.fromSet (const lbl) childs <> oldChainHeads
+
+-- Add a new non-head to a DynGraph
+-- This just adds an entry into the ChainHeads map, but it's not actually
+-- accessible from anywhere.
+addNonHead :: EChain -> BuildingDynGraph -> BuildingDynGraph
+addNonHead e@(EChain _ c) g = g & dgChainHeads%~ modChainHeads
+ where
+  !lbl = e^.label
+  modChainHeads oldChainHeads = case c^.cPushSet of
+      Nothing -> IM.insert lbl lbl oldChainHeads
+      Just childs -> IM.insert lbl lbl $ IM.fromSet (const lbl) childs <> oldChainHeads
+
 
 -- removeHead only removed the head reference for a chain, it does
 -- not remove it from the ChainCache (set of all referenced chains)
@@ -177,12 +194,10 @@ chainExists needle dg = dg ^. dgChainHeads . to (IM.member needle)
 getChain :: Label -> ChainM EChain
 getChain needle = do
     dg <- get
-    let loop headmap finalHead lbl =
-          let (Just next,map') = IM.updateLookupWithKey f lbl headmap
-              f _ _ = Just finalHead
-              rhead = next == lbl
-          in if rhead then (next,map') else loop map' finalHead next
-        (realHead,chainmap') = loop (dg^.dgChainHeads) realHead needle
+    let loop headmap !lbl finalHead =
+          let !(Just next,map') = IM.updateLookupWithKey (\_ _ -> Just finalHead) lbl headmap
+          in if next == lbl then (next,headmap) else loop map' next finalHead
+        (realHead,chainmap') = loop (dg^.dgChainHeads) needle realHead
     dgChainHeads .= chainmap'
     let m'chain = getFirst $ foldMapOf
             (dgHeads._Wrapped.to (IM.lookup realHead)._Just._Wrapped)
@@ -250,7 +265,7 @@ buildChains = mapM_ addChain'
             let chn = COut lbl :: Chain (IO ()) (IO ())
                 mkw = MkWeak $ mkWeak evt
             modify $ addHead (EChain False chn) mkw
-            addChain lbl prev
+            getChain lbl >>= \newChain -> addChain newChain prev
     addChain' _ = error "impulse <buildChains>: got non-terminal with no child info"
 
 addBound :: Label -> Label -> Event k -> ChainM () -> ChainM ()
@@ -264,51 +279,70 @@ addBound childLbl thisLbl evt chainAction = do
       else chainAction
 
 
+safeForNonHead :: Event a -> Bool
+safeForNonHead ENull{}  = True
+safeForNonHead EMap{}   = True
+safeForNonHead EFilt{}  = True
+safeForNonHead EUnion{} = True
+-- not sure if this is safe for the others, need to work through what happens
+-- with behaviors and dynamics.  Also need to check their behavior in
+-- `addChain`
+safeForNonHead _        = False
+
 -- if the chain already exists, we don't need to add it, but we do
 -- need to add the ultimate heads into the MkWeak collection
-addChain :: Label -> Event k -> ChainM ()
+addChain :: EChain{-child chain-} -> Event k -> ChainM ()
 addChain _ (EOut _ _) = error "impulse <addChain>: got a non-terminal EOut"
-addChain childLbl evt@(EIn lbl)  = addBound childLbl lbl evt $ do
+addChain child evt@(EIn lbl)  = addBound childLbl lbl evt $ do
     mTrace $ show ("EIn ", lbl, "child", childLbl)
-    void $ addChains False childLbl lbl evt (CEvent lbl)
-addChain childLbl evt@(ENull lbl prevE)  = addBound childLbl lbl evt $ do
+    void $ addChains False True child lbl evt (CEvent lbl)
+   where childLbl = child^.label
+addChain child evt@(ENull lbl prevE)  = addBound childLbl lbl evt $ do
     mTrace $ "ENull " ++ show lbl
-    added <- addChains False childLbl lbl evt (CEvent lbl)
-    when added (addChain lbl prevE)
-addChain childLbl evt@(EMap lbl f prevE) = addBound childLbl lbl evt $ do
+    added <- addChains False (safeForNonHead prevE) child lbl evt (CEvent lbl)
+    Fold.forM_ added $ \newChain -> addChain newChain prevE
+   where childLbl = child^.label
+addChain child evt@(EMap lbl f prevE) = addBound childLbl lbl evt $ do
     mTrace $ "EMap " ++ show lbl
-    added <- addChains False childLbl lbl evt (CMap lbl f)
-    when added (addChain lbl prevE)
-addChain childLbl evt@(EFilt lbl p prevE) = addBound childLbl lbl evt $ do
+    added <- addChains False (safeForNonHead prevE) child lbl evt (CMap lbl f)
+    Fold.forM_ added $ \newChain -> addChain newChain prevE
+   where childLbl = child^.label
+addChain child evt@(EFilt lbl p prevE) = addBound childLbl lbl evt $ do
     mTrace $ "EFilt " ++ show lbl
-    added <- addChains False childLbl lbl evt (CFilt lbl p)
-    when added (addChain lbl prevE)
-addChain childLbl evt@(EUnion lbl prev1 prev2) = addBound childLbl lbl evt $ do
+    added <- addChains False (safeForNonHead prevE) child lbl evt (CFilt lbl p)
+    Fold.forM_ added $ \newChain -> addChain newChain prevE
+   where childLbl = child^.label
+addChain child evt@(EUnion lbl prev1 prev2) = addBound childLbl lbl evt $ do
     mTrace $ "EUnion " ++ show lbl
-    added <- addChains False childLbl lbl evt (CEvent lbl)
-    when added (addChain lbl prev1 >> addChain lbl prev2)
-addChain childLbl evt@(EApply lbl prevE beh) = addBound childLbl lbl evt $ do
+    added <- addChains False (safeForNonHead prev1 && safeForNonHead prev2) child lbl evt (CEvent lbl)
+    Fold.forM_ added $ \newChain -> addChain newChain prev1 >> addChain newChain prev2
+   where childLbl = child^.label
+addChain child evt@(EApply lbl prevE beh) = addBound childLbl lbl evt $ do
     mTrace $ "EApply " ++ show lbl
     cbeh  <- makeBehavior beh
-    added <- addChains False childLbl lbl evt (CApply lbl cbeh)
-    when added (addChain lbl prevE)
-addChain childLbl evt@(ESwch lbl beh) = addBound childLbl lbl evt $ do
+    added <- addChains False True child lbl evt (CApply lbl cbeh)
+    Fold.forM_ added $ \newChain -> addChain newChain prevE
+   where childLbl = child^.label
+addChain child evt@(ESwch lbl beh) = addBound childLbl lbl evt $ do
     mTrace $ "ESwch " ++ show lbl
     cbeh  <- makeBehavior beh --CBehavior (Event a)
     let onChangedE = onChangedB beh
     prevSet <- lift $ newTVar emptyPrevSwchRef
-    added <- addChains True childLbl lbl evt (CSwchE lbl prevSet cbeh)
+    added <- addChains True True child lbl evt (CSwchE lbl prevSet cbeh)
     scribe dlEvents $ Endo (FireOnce lbl () :)
-    when added $ addChain lbl onChangedE
-addChain childLbl evt@(EJoin lbl prevE) = addBound childLbl lbl evt $ do
+    Fold.forM_ added $ \newChain -> addChain newChain onChangedE
+   where childLbl = child^.label
+addChain child evt@(EJoin lbl prevE) = addBound childLbl lbl evt $ do
     mTrace $ "EJoin " ++ show lbl
     prevSet <- lift $ newTVar emptyPrevSwchRef
-    added <- addChains True childLbl lbl evt (CJoin lbl prevSet)
-    when added (addChain lbl prevE)
-addChain childLbl evt@(EDyn lbl prevE) = addBound childLbl lbl evt $ do
+    added <- addChains True True child lbl evt (CJoin lbl prevSet)
+    Fold.forM_ added $ \newChain -> addChain newChain prevE
+   where childLbl = child^.label
+addChain child evt@(EDyn lbl prevE) = addBound childLbl lbl evt $ do
     mTrace $ "EDyn " ++ show lbl
-    added <- addChains False childLbl lbl evt (CDyn lbl)
-    when added (addChain lbl prevE)
+    added <- addChains False True child lbl evt (CDyn lbl)
+    Fold.forM_ added $ \newChain -> addChain newChain prevE
+   where childLbl = child^.label
 
 tracebackMkWeakHeads :: Event k -> ChainM ()
 tracebackMkWeakHeads e = case e of
@@ -326,21 +360,23 @@ tracebackMkWeakHeads e = case e of
 addChains
     :: (r ~ IO ())
     => PermHead
-    -> Label
+    -> Bool {- ok to short-cut the head map -}
+    -> EChain
     -> Label
     -> Event k
     -> (ChainNode (Chain r a) -> Chain r b)
-    -> ChainM Bool  -- True if the chain was added
-addChains p childLbl lbl evt constr = do
+    -> ChainM (Maybe EChain) -- returns a new chain, if it didn't already exist
+addChains p skipHeadUpdate childChain lbl evt constr = do
+    let childLbl = childChain^.label
     dg <- get
     mTrace $ show ("addCHains,heads",dg^.dgChainHeads,childLbl,lbl)
-    childChain <- getChain childLbl
-    let eChain = EChain p (constr $ eSingleton childChain)
-        mkw = MkWeak $ mkWeak evt
-    if chainExists lbl dg
-        then mTrace ("adding " ++ show childLbl ++ " to " ++ show lbl)
-             >> False <$ put (addChainTo childChain lbl dg)
-        else True  <$ put (removeHead childLbl $ addHead eChain mkw dg)
+    let !eChain = EChain p (constr $ eSingleton childChain)
+        !mkw = MkWeak $ mkWeak evt
+    if | chainExists lbl dg ->
+              mTrace ("adding " ++ show childLbl ++ " to " ++ show lbl)
+                >> Nothing <$ put (addChainTo childChain lbl dg)
+       | skipHeadUpdate -> Just eChain <$ put (removeHead childLbl $ addHead eChain mkw dg)
+       | otherwise -> Just eChain <$ put (removeHead childLbl $ addNonHead eChain dg)
 
 makeBehavior :: Behavior k -> ChainM (CBehavior k)
 makeBehavior (BAcc lbl a0 prevE) = lookupBehavior lbl >>= \case
@@ -357,7 +393,8 @@ makeBehavior (BAcc lbl a0 prevE) = lookupBehavior lbl >>= \case
         modify $ addHead (EChain False $ CAcc lbl cbeh) mkw
         addBehavior $ EBehavior lbl cbeh
         -- the pushing event needs to have this child added
-        cbeh <$ addChain lbl prevE
+        child <- getChain lbl
+        cbeh <$ addChain child prevE
 makeBehavior (BPure _l a) = return (ReadCB (return a))
 makeBehavior (BMap lbl f prevB) = lookupBehavior lbl >>= \case
     Just (EBehavior lbl' beh)
@@ -423,7 +460,8 @@ makeBehavior (BSwch lbl b prevE) = lookupBehavior lbl >>= \case
             mkw  = MkWeak $ mkWeakTVarKey tvar
         modify $ addHead (EChain False $ CSwch lbl cbs) mkw
         addBehavior $ EBehavior lbl cbeh
-        cbeh <$ addChain lbl prevE
+        child <- getChain lbl
+        cbeh <$ addChain child prevE
 
 -----------------------------------------------------
 
@@ -434,22 +472,22 @@ makeBehavior (BSwch lbl b prevE) = lookupBehavior lbl >>= \case
 
 compileChain :: (r ~ IO ()) => Chain r a -> CompiledChain r a
 compileChain (CEvent _ next) = compileNode next
-compileChain (CMap _ f next) =
+compileChain (CMap _ f next) = {-# SCC "CMap" #-}
     let !next' = compileNode next
     in \sink -> next' sink . f
 
-compileChain (CFilt _ p next) =
+compileChain (CFilt _ p next) = {-# SCC "CFilt" #-}
     let !next' = compileNode next
     in \sink -> maybe (return mempty) (next' sink) . p
 
 compileChain (COut _) =
     \sink a -> return $ mempty & ubOutputs .~ [sink a]
-compileChain (CAcc _ (PushCB ref)) =
+compileChain (CAcc _ (PushCB ref)) = {-# SCC "PushCB" #-}
     \_sink a -> mempty <$ modifyTVar' ref a
 
 compileChain (CAcc _ _) =
     error "impulse <compileChain>: attempt to accumulate to non-accumulating behavior!"
-compileChain (CApply _ cb next) =
+compileChain (CApply _ cb next) = {-# SCC "CApply" #-}
     let !next'  = compileNode next
     in \sink a -> do
         let doRead = do
@@ -458,28 +496,28 @@ compileChain (CApply _ cb next) =
         return $ mempty & readSteps .~ [doRead]
 
 -- updating a dynamic behavior
-compileChain (CSwch _ (CBSwitch ref)) =
+compileChain (CSwch _ (CBSwitch ref)) = {-# SCC "CSwch" #-}
     \_sink newB -> do
         let actStep = makeBehavior newB >>= lift . writeTVar ref
         return $ mempty & modSteps .~ [Mod actStep]
 
-compileChain (CDyn _ next) =
+compileChain (CDyn _ next) = {-# SCC "CDyn" #-}
     \sink newSGen -> return $ mempty & modSteps .~
         [DynMod $ do
             (a,sgstate) <- runStateT newSGen mempty
             return (actStep sgstate,next' sink a) ]
     where
       !next'  = compileNode next
-      actStep sgstate = do
+      actStep sgstate = {-# SCC "CDyn.actStep" #-} do
           buildTopChains (sgstate^.outputs)
           scribe dlAddInp $ Endo ((sgstate^.inputs.to IM.elems) <>)
           scribe (dlChains . from dirtyChains) $ sgstate^.inputs.to IM.keysSet
 
-compileChain (CSwchE _ prevSetRef eventB cn) = 
+compileChain (CSwchE _ prevSetRef eventB cn) =  {-# SCC "CSwchE" #-}
     \_sink _ -> return $ mempty & modSteps .~ [Mod actStep]
     where
       tmpHead e = IM.insertWith (const id) (e^.label) $ Identity e
-      actStep = do
+      actStep = {-# SCC "CSwchE.actStep" #-} do
           -- This should be the way we set up the graph.
           -- onChangedE -> CSwchE
           -- eventFromBehavior ->  CSwchE children
@@ -515,13 +553,13 @@ compileChain (CSwchE _ prevSetRef eventB cn) =
                          in if chainExists l g then mempty else IM.singleton l c)
           dgHeads._Wrapped %= \im ->
             foldrOf (folded.to (EChain False)) tmpHead im missingChains
-          pushSet^!members.act (flip addChain newE)
+          pushSet^!members.act (getChain >=> flip addChain newE)
 
-compileChain (CJoin _ prevSetRef cn) =
+compileChain (CJoin _ prevSetRef cn) = {-# SCC "CJoin" #-}
     \_sink newE -> return $ mempty & modSteps .~ [Mod $ actStep newE]
     where
       tmpHead e = IM.insertWith (const id) (e^.label) $ Identity e
-      actStep newE = do
+      actStep newE = {-# SCC "CJoin.actStep" #-} do
           -- see notes for CSwchE
           let pushSet = cn^.cnChildren.folded.label.to (IntSet.singleton)
           pVals <- lift $ do
@@ -545,12 +583,10 @@ compileChain (CJoin _ prevSetRef cn) =
                          in if chainExists l g then mempty else IM.singleton l c)
           dgHeads._Wrapped %= \im ->
             foldrOf (folded.to (EChain False)) tmpHead im missingChains
-          pushSet^!members.act (flip addChain newE)
+          pushSet^!members.act (getChain >=> flip addChain newE)
 
 compileNode :: (r ~ IO ()) => ChainNode (Chain r a) -> CompiledChain r a
-compileNode cn =
-    -- case over cnChildren compileChain cn of
-    case map compileChain (cn^.cnChildren) of
+compileNode cn = case map compileChain (cn^.cnChildren) of
         [] -> \_ _ -> return mempty
         [next] -> next
         nexts  -> \sink a -> foldM (\acc f -> (acc <>) <$> f sink a) mempty nexts

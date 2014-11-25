@@ -2,7 +2,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
-{-# OPTIONS_GHC -Wall #-}
+{-# OPTIONS_GHC -Wall -fno-prof-auto #-}
 {- Use this internally because the transformers RWST leaks in the W part -}
 module Reactive.Impulse.Internal.RWST (
   RWST(..)
@@ -90,8 +90,8 @@ instance (Monad m) => Monad (RWST r w s m) where
     return a = RWST $ \w _ s -> return (a, s, w)
     {-# INLINE (>>=) #-}
     m >>= k  = RWST $ \w0 r s -> do
-        (a, s', w)  <- runRWST' m w0 r s
-        (b, s'',w') <- runRWST' (k a) w r s'
+        (!a, !s', !w)  <- runRWST' m w0 r s
+        (!b, !s'',!w') <- runRWST' (k a) w r s'
         return (b, s'', w')
     fail msg = RWST $ \_ _ -> fail msg
 

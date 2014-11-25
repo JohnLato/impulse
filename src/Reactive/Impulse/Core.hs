@@ -175,7 +175,10 @@ reactimate e = do
     outputs %= (EOut lbl e:)
 
 addInput :: SGInput -> SGen ()
-addInput sgi = inputs %= (IM.insert (sgi^.label) sgi)
+addInput sgi = do
+    inputs %= (IM.insert (sgi^.label) sgi)
+    !_ <- get
+    return ()
 
 newAddHandler :: SGen ((a -> IO ()), Event a)
 newAddHandler = do
